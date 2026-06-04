@@ -1,0 +1,293 @@
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const { URL } = require('url');
+const { SECTION_NAMES, SimpleDb } = require('./simple_db');
+const { UserTable } = require('./user_table');
+const { JsonDataStore } = require('./json_data_store');
+const { RouteRegistry } = require('./route_registry');
+const { LevelRankService } = require('./level_rank_service');
+
+function loadConfig() {
+  const configPath = path.join(__dirname, 'server.config.json');
+  const defaults = {
+    host: '127.0.0.1',
+    port: 8787,
+    dbFile: './db/global_db.json',
+    maxBodyBytes: 1024 * 1024,
+  };
+
+  if (!fs.existsSync(configPath)) {
+    return defaults;
+  }
+
+  const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  return Object.assign(defaults, parsed);
+}
+
+function resolveDbFile(dbFile) {
+  if (path.isAbsolute(dbFile)) {
+    return dbFile;
+  }
+  return path.resolve(__dirname, dbFile);
+}
+
+const config = loadConfig();
+const HOST = process.env.HOST || config.host;
+const PORT = Number(process.env.PORT || config.port);
+const DB_FILE = resolveDbFile(process.env.DB_FILE || config.dbFile);
+const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || config.maxBodyBytes);
+
+const db = new SimpleDb(DB_FILE);
+const userDb = new UserTable(path.join(path.dirname(DB_FILE), 'users.json'));
+const gameDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'game_data.json'), {
+  version: 1,
+  levels: {},
+});
+const levelRankService = new LevelRankService(gameDataStore, { logger: console });
+const apiRoutes = new RouteRegistry({
+  parseBody,
+  sendJson,
+});
+
+apiRoutes.post('/api/rank/settlement', async (ctx) => {
+  const body = await ctx.body();
+  console.log('[rank:settlement] POST /api/rank/settlement body', JSON.stringify({
+    playerId: body && body.playerId,
+    level: body && body.level,
+    score: body && body.score,
+    combo: body && body.combo,
+    timeMs: body && body.timeMs,
+    timeSeconds: body && body.timeSeconds,
+    keys: body && typeof body === 'object' ? Object.keys(body) : [],
+  }));
+  const rank = levelRankService.submitResult(body);
+  console.log('[rank:settlement] POST /api/rank/settlement response', JSON.stringify(rank));
+  ctx.json(200, { ok: true, rank });
+});
+
+function sendJson(res, statusCode, body) {
+  const payload = JSON.stringify(body);
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
+  res.end(payload);
+}
+
+function sendError(res, statusCode, message) {
+  sendJson(res, statusCode, { ok: false, error: message });
+}
+
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    let raw = '';
+
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        reject(new Error('request body too large'));
+        req.destroy();
+        return;
+      }
+      raw += chunk;
+    });
+
+    req.on('end', () => {
+      if (!raw.trim()) {
+        resolve({});
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(raw));
+      } catch (error) {
+        reject(new Error('invalid JSON body'));
+      }
+    });
+
+    req.on('error', reject);
+  });
+}
+
+function parseRoute(req) {
+  const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
+  const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  return { url, parts };
+}
+
+function routeHealth(req, res, parts) {
+  if (req.method === 'GET' && parts.length === 1 && parts[0] === 'health') {
+    sendJson(res, 200, { ok: true, sections: SECTION_NAMES });
+    return true;
+  }
+  return false;
+}
+
+async function routeGlobal(req, res, parts) {
+  if (parts[0] !== 'api' || parts[1] !== 'global' || !parts[2]) {
+    return false;
+  }
+
+  const playerId = parts[2];
+
+  if (parts.length === 3) {
+    if (req.method === 'GET') {
+      sendJson(res, 200, { ok: true, playerId, global: db.getGlobal(playerId) });
+      return true;
+    }
+
+    if (req.method === 'PUT') {
+      const body = await parseBody(req);
+      sendJson(res, 200, { ok: true, playerId, global: db.replaceGlobal(playerId, body) });
+      return true;
+    }
+
+    if (req.method === 'PATCH' || req.method === 'POST') {
+      const body = await parseBody(req);
+      sendJson(res, 200, { ok: true, playerId, global: db.patchGlobal(playerId, body) });
+      return true;
+    }
+  }
+
+  if (parts.length === 4 && parts[3] === 'sections' && req.method === 'GET') {
+    sendJson(res, 200, { ok: true, playerId, sections: db.getSections(playerId) });
+    return true;
+  }
+
+  if (parts.length === 5 && parts[3] === 'sections') {
+    const section = parts[4];
+
+    if (req.method === 'GET') {
+      sendJson(res, 200, { ok: true, playerId, section, data: db.getSection(playerId, section) });
+      return true;
+    }
+
+    if (req.method === 'PUT') {
+      const body = await parseBody(req);
+      sendJson(res, 200, { ok: true, playerId, section, data: db.replaceSection(playerId, section, body) });
+      return true;
+    }
+
+    if (req.method === 'PATCH' || req.method === 'POST') {
+      const body = await parseBody(req);
+      sendJson(res, 200, { ok: true, playerId, section, data: db.patchSection(playerId, section, body) });
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function routeUser(req, res, parts) {
+  if (parts[0] !== 'api' || parts[1] !== 'user') return false;
+
+  // POST /api/user/register
+  if (req.method === 'POST' && parts.length === 3 && parts[2] === 'register') {
+    const body = await parseBody(req);
+    const user = userDb.register(body.account, body.gameName);
+    sendJson(res, 200, { ok: true, user });
+    return true;
+  }
+
+  // POST /api/user/login
+  if (req.method === 'POST' && parts.length === 3 && parts[2] === 'login') {
+    const body = await parseBody(req);
+    const user = userDb.login(body.account);
+    sendJson(res, 200, { ok: true, user });
+    return true;
+  }
+
+  // POST /api/user/logout
+  if (req.method === 'POST' && parts.length === 3 && parts[2] === 'logout') {
+    const body = await parseBody(req);
+    const user = userDb.logout(body.account);
+    sendJson(res, 200, { ok: true, user });
+    return true;
+  }
+
+  // GET /api/user/list
+  if (req.method === 'GET' && parts.length === 3 && parts[2] === 'list') {
+    if (!userDb.verifyRequestHeaders(req.headers)) {
+      sendError(res, 401, 'unauthorized');
+      return true;
+    }
+    const users = userDb.listUsers();
+    sendJson(res, 200, { ok: true, count: users.length, users });
+    return true;
+  }
+
+  // GET /api/user/profile/:account
+  if (req.method === 'GET' && parts.length === 4 && parts[2] === 'profile') {
+    const account = parts[3];
+    if (!userDb.verifyRequestHeaders(req.headers)) {
+      sendError(res, 401, 'unauthorized');
+      return true;
+    }
+    const user = userDb.getUser(account);
+    if (!user) {
+      sendError(res, 404, 'user not found');
+      return true;
+    }
+    sendJson(res, 200, { ok: true, user });
+    return true;
+  }
+
+  // PATCH /api/user/profile/:account
+  if (req.method === 'PATCH' && parts.length === 4 && parts[2] === 'profile') {
+    const account = parts[3];
+    if (!userDb.verifyRequestHeaders(req.headers)) {
+      sendError(res, 401, 'unauthorized');
+      return true;
+    }
+    const body = await parseBody(req);
+    const user = userDb.updateGameName(account, body.gameName);
+    sendJson(res, 200, { ok: true, user });
+    return true;
+  }
+
+  // DELETE /api/user/account/:account
+  if (req.method === 'DELETE' && parts.length === 4 && parts[2] === 'account') {
+    const account = parts[3];
+    if (!userDb.verifyRequestHeaders(req.headers)) {
+      sendError(res, 401, 'unauthorized');
+      return true;
+    }
+    const deleted = userDb.delete(account);
+    sendJson(res, 200, { ok: true, deleted });
+    return true;
+  }
+
+  return false;
+}
+
+async function handleRequest(req, res) {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.url}`);
+
+  if (req.method === 'OPTIONS') {
+    sendJson(res, 204, {});
+    return;
+  }
+
+  const { parts } = parseRoute(req);
+
+  try {
+    if (routeHealth(req, res, parts)) return;
+    if (await routeUser(req, res, parts)) return;
+    if (await apiRoutes.handle(req, res, parts)) return;
+    if (await routeGlobal(req, res, parts)) return;
+    sendError(res, 404, 'route not found');
+  } catch (error) {
+    sendError(res, 400, error.message);
+  }
+}
+
+const server = http.createServer(handleRequest);
+
+server.listen(PORT, HOST, () => {
+  console.log(`Global settings server listening on http://${HOST}:${PORT}`);
+  console.log(`Database file: ${DB_FILE}`);
+});

@@ -1,0 +1,12 @@
+{
+  "name": "vita-global-http-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simple HTTP server for segmented VITA global settings storage.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check simple_db.js && node --check json_data_store.js && node --check route_registry.js && node --check level_rank_service.js"
+  },
+  "license": "UNLICENSED"
+}
