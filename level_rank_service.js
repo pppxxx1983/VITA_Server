@@ -13,9 +13,20 @@ function clampInt(value, min, max) {
   return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
+function normalizeText(value) {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const text = value.trim();
+  return text ? text : undefined;
+}
+
 class LevelRankService {
   constructor(dataStore, options = {}) {
     this.dataStore = dataStore;
+    this.dailySpecialDataStore = options.dailySpecialDataStore || dataStore;
+    this.userInfoDataStore = options.userInfoDataStore || dataStore;
     this.logger = options.logger || console;
   }
 
@@ -33,10 +44,52 @@ class LevelRankService {
       score: result.score,
       combo: result.combo,
       timeMs: result.timeMs,
+      specialScore: result.specialScore,
       beatPercent,
       improved: true,
       totalPlayers,
     });
+
+    // 同时保存到每日特殊积分榜
+    let specialRankInfo = null;
+    if (result.specialScore > 0) {
+      const date = this.toDateString(new Date());
+      const beforeLeaderboard = this.getDailySpecialLeaderboard(date, result.playerId);
+      const oldRank = beforeLeaderboard.self ? beforeLeaderboard.self.rank : null;
+      this.saveSpecialScore(result);
+      const afterLeaderboard = this.getDailySpecialLeaderboard(date, result.playerId);
+      const newRank = afterLeaderboard.self ? afterLeaderboard.self.rank : null;
+
+      const isNew = oldRank === null && newRank !== null;
+      const isUp = oldRank !== null && newRank !== null && newRank < oldRank;
+      const rankChange = isNew ? 'new entry' : (isUp ? `rank up ${oldRank - newRank} places` : (oldRank !== newRank ? `rank down ${newRank - oldRank} places` : 'rank unchanged'));
+
+      this.log('specialScore daily rank change', {
+        playerId: result.playerId,
+        date,
+        oldRank,
+        newRank,
+        specialScore: result.specialScore,
+        rankChange,
+        isNew,
+        isUp,
+      });
+
+      specialRankInfo = {
+        oldRank,
+        previousRank: oldRank,
+        newRank,
+        rank: newRank,
+        rankUp: isUp || isNew,
+        rankIncreased: isUp || isNew,
+        rankChange,
+        isNew,
+        isUp,
+        self: afterLeaderboard.self,
+        top100: afterLeaderboard.top100,
+        surrounding: this.getRankWindow(afterLeaderboard.top100, oldRank, newRank),
+      };
+    }
 
     return {
       playerId: result.playerId,
@@ -44,9 +97,11 @@ class LevelRankService {
       score: result.score,
       combo: result.combo,
       timeMs: result.timeMs,
+      specialScore: result.specialScore,
       beatPercent,
       improved: true,
       totalPlayers,
+      ...(specialRankInfo || {}),
     };
   }
 
@@ -59,6 +114,153 @@ class LevelRankService {
     return this.dataStore.update(['levels', String(level), 'scores'], (scores) => {
       return Array.isArray(scores) ? scores.concat([record]) : [record];
     }, []).slice(-1)[0];
+  }
+
+  saveSpecialScore(result) {
+    const date = this.toDateString(new Date());
+    const record = Object.assign({}, result, {
+      id: `${Date.now()}_${Math.floor(Math.random() * 1000000)}`,
+      updatedAt: new Date().toISOString(),
+      date,
+    });
+    return this.dailySpecialDataStore.update(['dailySpecial', date], (scores) => {
+      const list = Array.isArray(scores) ? scores.slice() : [];
+      const idx = list.findIndex((s) => s.playerId === result.playerId);
+      if (idx >= 0) {
+        // 同一天已有记录：累加特殊积分，更新其他字段
+        list[idx].specialScore += result.specialScore;
+        list[idx].score = result.score;
+        list[idx].combo = result.combo;
+        list[idx].timeMs = result.timeMs;
+        list[idx].level = result.level;
+        list[idx].updatedAt = record.updatedAt;
+        list[idx].id = record.id;
+        return list;
+      }
+      // 新记录
+      return list.concat([record]);
+    }, []);
+  }
+
+  listDailySpecialScores(date) {
+    const scores = this.dailySpecialDataStore.get(['dailySpecial', date], []);
+    return Array.isArray(scores) ? scores : [];
+  }
+
+  aggregateDailySpecialScores(date) {
+    const scores = this.listDailySpecialScores(date);
+    const playerMap = new Map();
+    for (const item of scores) {
+      if (!playerMap.has(item.playerId)) {
+        playerMap.set(item.playerId, { ...item });
+      } else {
+        const existing = playerMap.get(item.playerId);
+        existing.specialScore += item.specialScore;
+        existing.score = item.score;
+        existing.combo = item.combo;
+        existing.timeMs = item.timeMs;
+        existing.level = item.level;
+        existing.updatedAt = item.updatedAt;
+      }
+    }
+    return Array.from(playerMap.values());
+  }
+
+  getDailySpecialRank(date, limit = 50) {
+    const aggregated = this.aggregateDailySpecialScores(date);
+    const sorted = aggregated.slice().sort((a, b) => {
+      if (b.specialScore !== a.specialScore) return b.specialScore - a.specialScore;
+      if (a.timeMs !== b.timeMs) return a.timeMs - b.timeMs;
+      return new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
+    });
+    return sorted.slice(0, limit);
+  }
+
+  toDateString(date) {
+    // 基于北京时间（UTC+8）生成日期字符串
+    const bj = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+    const y = bj.getUTCFullYear();
+    const m = String(bj.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(bj.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  getLatestDailySpecialDate() {
+    const dates = Object.keys(this.dailySpecialDataStore.get(['dailySpecial'], {}));
+    if (dates.length === 0) return this.toDateString(new Date());
+    return dates.sort().slice(-1)[0];
+  }
+
+  getDailySpecialLeaderboard(date, playerId, limit = 100) {
+    const aggregated = this.aggregateDailySpecialScores(date);
+
+    // 排序：specialScore 降序 -> timeMs 升序 -> updatedAt 升序
+    const sorted = aggregated.slice().sort((a, b) => {
+      if (b.specialScore !== a.specialScore) return b.specialScore - a.specialScore;
+      if (a.timeMs !== b.timeMs) return a.timeMs - b.timeMs;
+      return new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
+    });
+
+    // 赋予名次
+    const ranked = [];
+    for (const item of sorted) {
+      const userInfo = this.userInfoDataStore.get(['userInfos', item.playerId], {});
+      const name = this.getDisplayName(item, userInfo);
+      ranked.push({
+        rank: ranked.length + 1,
+        playerId: item.playerId,
+        name,
+        nickname: name,
+        specialScore: item.specialScore,
+        score: item.score,
+        combo: item.combo,
+        timeMs: item.timeMs,
+        level: item.level,
+        avatarId: typeof userInfo.avatarId === 'number' ? userInfo.avatarId : (typeof userInfo.avatarIndex === 'number' ? userInfo.avatarIndex : 0),
+        avatarFrameId: typeof userInfo.avatarFrameId === 'number' ? userInfo.avatarFrameId : (typeof userInfo.frameIndex === 'number' ? userInfo.frameIndex : 0),
+      });
+    }
+
+    const top100 = ranked.slice(0, limit);
+
+    let self = null;
+    if (playerId) {
+      const selfIndex = ranked.findIndex((item) => item.playerId === playerId);
+      if (selfIndex >= 0) {
+        self = ranked[selfIndex];
+      }
+    }
+
+    return { top100, self };
+  }
+
+  getRankWindow(ranked, oldRank, newRank) {
+    if (!Array.isArray(ranked) || ranked.length === 0) return [];
+    const ranks = new Set();
+    const addAround = (rank) => {
+      if (typeof rank !== 'number' || !Number.isFinite(rank) || rank <= 0) return;
+      for (let i = rank - 4; i <= rank + 4; i++) {
+        if (i > 0) ranks.add(i);
+      }
+    };
+    addAround(oldRank);
+    addAround(newRank);
+    return ranked.filter((item) => ranks.has(item.rank));
+  }
+
+  getDisplayName(rankItem, userInfo) {
+    return normalizeText(userInfo.name)
+      || normalizeText(userInfo.nickname)
+      || normalizeText(userInfo.playerName)
+      || normalizeText(userInfo.nickName)
+      || normalizeText(userInfo.userName)
+      || normalizeText(userInfo.username)
+      || normalizeText(userInfo.displayName)
+      || normalizeText(rankItem.name)
+      || normalizeText(rankItem.nickname)
+      || normalizeText(rankItem.playerName)
+      || normalizeText(rankItem.displayName)
+      || '';
   }
 
   listScores(level) {
@@ -88,6 +290,9 @@ class LevelRankService {
     const level = clampInt(toFiniteNumber(input.level, 'level'), MIN_LEVEL, MAX_LEVEL);
     const score = Math.max(0, Math.floor(toFiniteNumber(input.score, 'score')));
     const combo = Math.max(0, Math.floor(toFiniteNumber(input.combo, 'combo')));
+    const specialScore = input.specialScore !== undefined
+      ? Math.max(0, Math.floor(toFiniteNumber(input.specialScore, 'specialScore')))
+      : 0;
     const rawTimeMs = input.timeMs !== undefined
       ? toFiniteNumber(input.timeMs, 'timeMs')
       : toFiniteNumber(input.timeSeconds, 'timeSeconds') * 1000;
@@ -98,7 +303,12 @@ class LevelRankService {
       level,
       score,
       combo,
+      specialScore,
       timeMs,
+      name: normalizeText(input.name)
+        || normalizeText(input.nickname)
+        || normalizeText(input.playerName)
+        || normalizeText(input.displayName),
     };
   }
 
@@ -161,6 +371,7 @@ class LevelRankService {
       level: input.level,
       score: input.score,
       combo: input.combo,
+      specialScore: input.specialScore,
       timeMs: input.timeMs,
       timeSeconds: input.timeSeconds,
       keys: Object.keys(input),
@@ -173,6 +384,7 @@ class LevelRankService {
       level: item.level,
       score: item.score,
       combo: item.combo,
+      specialScore: item.specialScore,
       timeMs: item.timeMs,
       updatedAt: item.updatedAt,
     }));

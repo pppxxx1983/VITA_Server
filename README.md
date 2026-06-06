@@ -103,6 +103,10 @@ PUT   /api/global/:playerId/sections/:section
 PATCH /api/global/:playerId/sections/:section
 
 POST  /api/rank/settlement
+
+GET   /api/user/info/:playerId
+POST  /api/user/info/:playerId
+PATCH /api/user/info/:playerId
 ```
 
 Rank settlement request:
@@ -128,12 +132,22 @@ Rank response:
   "rank": {
     "beatPercent": 80,
     "improved": true,
-    "totalPlayers": 10
+    "totalPlayers": 10,
+    "oldRank": 50,
+    "previousRank": 50,
+    "newRank": 47,
+    "rank": 47,
+    "rankUp": true,
+    "rankIncreased": true,
+    "self": {},
+    "top100": [],
+    "surrounding": []
   }
 }
 ```
 
 Rank comparison order is score first, then combo, then shorter time. The returned percentage is rounded to an integer for a fuzzy display result.
+When `specialScore` is submitted, the server also returns the daily special score rank transition fields above. The client opens `ChallengeLevelUpUI` only when `rankUp`/`rankIncreased` is true and `newRank < oldRank`.
 
 ## Server Framework
 
@@ -170,4 +184,18 @@ api.patchSection("profile", {
     frameIndex: GlobalSettings.frameIndex,
 });
 api.getGlobal().then((global) => GlobalSettings.setAll(global));
+```
+
+## User Info
+
+User info is handled by `user_info_service.js`, using the shared `JsonDataStore` and `RouteRegistry`.
+
+```http
+PATCH /api/user/info/player_001
+Content-Type: application/json
+
+{
+  "avatarId": 2,
+  "avatarFrameId": 4
+}
 ```

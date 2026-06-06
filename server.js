@@ -7,6 +7,9 @@ const { UserTable } = require('./user_table');
 const { JsonDataStore } = require('./json_data_store');
 const { RouteRegistry } = require('./route_registry');
 const { LevelRankService } = require('./level_rank_service');
+const { UserInfoService } = require('./user_info_service');
+const { RefreshTimeService } = require('./refresh_time_service');
+const { TravelService } = require('./travel_service');
 
 function loadConfig() {
   const configPath = path.join(__dirname, 'server.config.json');
@@ -40,15 +43,34 @@ const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || config.maxBodyBytes)
 
 const db = new SimpleDb(DB_FILE);
 const userDb = new UserTable(path.join(path.dirname(DB_FILE), 'users.json'));
-const gameDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'game_data.json'), {
+const levelRankDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'level_rank.json'), {
   version: 1,
   levels: {},
 });
-const levelRankService = new LevelRankService(gameDataStore, { logger: console });
+const dailySpecialDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'daily_special.json'), {
+  version: 1,
+  dailySpecial: {},
+});
+const userInfoDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'user_info.json'), {
+  version: 1,
+  userInfos: {},
+});
+const levelRankService = new LevelRankService(levelRankDataStore, { logger: console, userInfoDataStore, dailySpecialDataStore });
+const userInfoService = new UserInfoService(userInfoDataStore);
+const refreshTimeService = new RefreshTimeService();
+const travelDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'travel_data.json'), {
+  version: 1,
+  players: {},
+});
+const travelService = new TravelService(travelDataStore, { defaultFragmentLimit: 10, defaultTotalStages: 20 });
 const apiRoutes = new RouteRegistry({
   parseBody,
   sendJson,
 });
+
+userInfoService.registerRoutes(apiRoutes);
+refreshTimeService.registerRoutes(apiRoutes);
+travelService.registerRoutes(apiRoutes);
 
 apiRoutes.post('/api/rank/settlement', async (ctx) => {
   const body = await ctx.body();
@@ -57,6 +79,7 @@ apiRoutes.post('/api/rank/settlement', async (ctx) => {
     level: body && body.level,
     score: body && body.score,
     combo: body && body.combo,
+    specialScore: body && body.specialScore,
     timeMs: body && body.timeMs,
     timeSeconds: body && body.timeSeconds,
     keys: body && typeof body === 'object' ? Object.keys(body) : [],
@@ -64,6 +87,27 @@ apiRoutes.post('/api/rank/settlement', async (ctx) => {
   const rank = levelRankService.submitResult(body);
   console.log('[rank:settlement] POST /api/rank/settlement response', JSON.stringify(rank));
   ctx.json(200, { ok: true, rank });
+});
+
+apiRoutes.get('/api/rank/special/daily', async (ctx) => {
+  const url = new URL(ctx.req.url, `http://${ctx.req.headers.host || `${HOST}:${PORT}`}`);
+  let date = url.searchParams.get('date');
+  if (!date) {
+    date = levelRankService.getLatestDailySpecialDate();
+  }
+  const rank = levelRankService.getDailySpecialRank(date);
+  ctx.json(200, { ok: true, date, rank });
+});
+
+apiRoutes.get('/api/rank/special/daily/leaderboard', async (ctx) => {
+  const url = new URL(ctx.req.url, `http://${ctx.req.headers.host || `${HOST}:${PORT}`}`);
+  let date = url.searchParams.get('date');
+  const playerId = url.searchParams.get('playerId');
+  if (!date) {
+    date = levelRankService.getLatestDailySpecialDate();
+  }
+  const result = levelRankService.getDailySpecialLeaderboard(date, playerId || '', 100);
+  ctx.json(200, { ok: true, date, playerId: playerId || '', top100: result.top100, self: result.self });
 });
 
 function sendJson(res, statusCode, body) {
