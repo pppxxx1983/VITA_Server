@@ -41,6 +41,7 @@ class UserInfoService {
   registerRoutes(routes) {
     routes.get('/api/user/info/:playerId', (ctx) => {
       const playerId = this.normalizePlayerId(ctx.params.playerId);
+      console.log(`[userInfo] GET /api/user/info/${playerId}`);
       ctx.json(200, { ok: true, playerId, userInfo: this.getUserInfo(playerId) });
     });
 
@@ -51,13 +52,17 @@ class UserInfoService {
   async patchUserInfoRoute(ctx) {
     const playerId = this.normalizePlayerId(ctx.params.playerId);
     const body = await ctx.body();
+    console.log(`[userInfo] ${ctx.req.method} /api/user/info/${playerId}`, JSON.stringify(body));
     const userInfo = this.patchUserInfo(playerId, body);
     ctx.json(200, { ok: true, playerId, userInfo });
   }
 
   getUserInfo(playerId) {
-    const saved = this.dataStore.get([this.rootKey, playerId], {});
-    return this.normalizeUserInfo(playerId, saved, false);
+    const saved = this.dataStore.get([this.rootKey, playerId], null);
+    const exists = isObject(saved);
+    const userInfo = this.normalizeUserInfo(playerId, exists ? saved : {}, false);
+    userInfo.exists = exists;
+    return userInfo;
   }
 
   patchUserInfo(playerId, patch) {

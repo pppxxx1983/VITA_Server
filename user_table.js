@@ -75,7 +75,7 @@ class UserTable {
    * @param {string} gameName - 游戏名
    * @returns {object} 用户信息（不含敏感字段的副本）
    */
-  register(account, gameName) {
+  register(account, gameName, playerId) {
     if (!account || typeof account !== 'string') {
       throw new Error('account is required');
     }
@@ -89,6 +89,7 @@ class UserTable {
     const user = {
       account,
       gameName,
+      playerId: playerId && typeof playerId === 'string' ? playerId : account,
       token: generateToken(),
       createdAt: nowIso(),
       updatedAt: nowIso(),
@@ -96,7 +97,7 @@ class UserTable {
 
     this.data.users[account] = user;
     this.flush();
-    return this._safeUser(user);
+    return this._safeUser(user, true);
   }
 
   /**
@@ -167,10 +168,13 @@ class UserTable {
     if (!user) {
       throw new Error('user not found');
     }
+    if (!user.playerId) {
+      user.playerId = user.account;
+    }
     user.token = generateToken();
     user.updatedAt = nowIso();
     this.flush();
-    return this._safeUser(user);
+    return this._safeUser(user, true);
   }
 
   /**
@@ -247,13 +251,18 @@ class UserTable {
 
   /* ---------- 工具方法 ---------- */
 
-  _safeUser(user) {
-    return {
+  _safeUser(user, includeToken = false) {
+    const safeUser = {
       account: user.account,
       gameName: user.gameName,
+      playerId: user.playerId || user.account,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
+    if (includeToken) {
+      safeUser.token = user.token;
+    }
+    return safeUser;
   }
 
   getRawData() {

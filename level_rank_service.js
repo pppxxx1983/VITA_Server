@@ -27,6 +27,7 @@ class LevelRankService {
     this.dataStore = dataStore;
     this.dailySpecialDataStore = options.dailySpecialDataStore || dataStore;
     this.userInfoDataStore = options.userInfoDataStore || dataStore;
+    this.dailyRankAchievementService = options.dailyRankAchievementService || null;
     this.logger = options.logger || console;
   }
 
@@ -62,7 +63,15 @@ class LevelRankService {
 
       const isNew = oldRank === null && newRank !== null;
       const isUp = oldRank !== null && newRank !== null && newRank < oldRank;
-      const rankChange = isNew ? 'new entry' : (isUp ? `rank up ${oldRank - newRank} places` : (oldRank !== newRank ? `rank down ${newRank - oldRank} places` : 'rank unchanged'));
+      const isDown = oldRank !== null && newRank !== null && newRank > oldRank;
+      const rankChange = isNew ? 'new entry' : (isUp ? `rank up ${oldRank - newRank} places` : (isDown ? `rank down ${newRank - oldRank} places` : 'rank unchanged'));
+      const rankEventType = isNew ? 'new_entry' : (isUp ? 'rank_up' : (isDown ? 'rank_down' : 'unchanged'));
+
+      // 前3名晋升标记
+      const enteredTop3 = (oldRank === null || oldRank > 3) && newRank !== null && newRank <= 3;
+      const top3RankUp = oldRank !== null && oldRank <= 3 && newRank !== null && newRank < oldRank;
+      const promotedFrom = oldRank;
+      const promotedTo = newRank;
 
       this.log('specialScore daily rank change', {
         playerId: result.playerId,
@@ -75,6 +84,28 @@ class LevelRankService {
         isUp,
       });
 
+      // 记录 1-3 名成就
+      let achievement = null;
+      let recordResult = null;
+      if (this.dailyRankAchievementService && newRank !== null && newRank <= 3) {
+        recordResult = this.dailyRankAchievementService.recordRank(result.playerId, date, newRank);
+        achievement = this.dailyRankAchievementService.getAchievement(result.playerId, date);
+        this.log('rank achievement recorded', {
+          playerId: result.playerId,
+          date,
+          newRank,
+          isNewToday: recordResult.isNew,
+          totalCount1: achievement.totalCount1,
+          totalCount2: achievement.totalCount2,
+          totalCount3: achievement.totalCount3,
+        });
+      }
+
+      // 用最新的 achievement 覆盖 self 中的旧数据
+      const selfWithAchievement = afterLeaderboard.self
+        ? Object.assign({}, afterLeaderboard.self, achievement ? { achievement } : {})
+        : null;
+
       specialRankInfo = {
         oldRank,
         previousRank: oldRank,
@@ -83,13 +114,33 @@ class LevelRankService {
         rankUp: isUp || isNew,
         rankIncreased: isUp || isNew,
         rankChange,
+        rankEventType,
         isNew,
         isUp,
-        self: afterLeaderboard.self,
+        enteredTop3,
+        top3RankUp,
+        promotedFrom,
+        promotedTo,
+        achievement,
+        achievementIsNew: recordResult && recordResult.isNew,
+        isNewToday: recordResult && recordResult.isNew,
+        self: selfWithAchievement,
         top100: afterLeaderboard.top100,
         surrounding: this.getRankWindow(afterLeaderboard.top100, oldRank, newRank),
       };
     }
+
+    // 精简结算返回
+    const top3 = specialRankInfo
+      ? specialRankInfo.top100.slice(0, 3).map((item) => ({
+          rank: item.rank,
+          playerId: item.playerId,
+          name: item.name,
+          avatarId: item.avatarId,
+          avatarFrameId: item.avatarFrameId,
+          specialScore: item.specialScore,
+        }))
+      : [];
 
     return {
       playerId: result.playerId,
@@ -99,9 +150,23 @@ class LevelRankService {
       timeMs: result.timeMs,
       specialScore: result.specialScore,
       beatPercent,
-      improved: true,
       totalPlayers,
-      ...(specialRankInfo || {}),
+      rank: specialRankInfo
+        ? {
+            oldRank: specialRankInfo.oldRank,
+            newRank: specialRankInfo.newRank,
+            enteredTop3: specialRankInfo.enteredTop3,
+            top3RankUp: specialRankInfo.top3RankUp,
+            rankUp: specialRankInfo.rankUp,
+            rankIncreased: specialRankInfo.rankIncreased,
+            rankEventType: specialRankInfo.rankEventType,
+            improved: specialRankInfo.isNew || specialRankInfo.isUp,
+            achievementIsNew: specialRankInfo.achievementIsNew,
+            isNewToday: specialRankInfo.isNewToday,
+          }
+        : null,
+      achievement: specialRankInfo ? specialRankInfo.achievement : null,
+      top3,
     };
   }
 
@@ -168,7 +233,8 @@ class LevelRankService {
 
   getDailySpecialRank(date, limit = 50) {
     const aggregated = this.aggregateDailySpecialScores(date);
-    const sorted = aggregated.slice().sort((a, b) => {
+    const filtered = aggregated.filter((item) => item.specialScore > 0);
+    const sorted = filtered.slice().sort((a, b) => {
       if (b.specialScore !== a.specialScore) return b.specialScore - a.specialScore;
       if (a.timeMs !== b.timeMs) return a.timeMs - b.timeMs;
       return new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
@@ -201,9 +267,10 @@ class LevelRankService {
       return new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
     });
 
-    // 赋予名次
+    // 过滤积分为 0 的，赋予名次
+    const filtered = sorted.filter((item) => item.specialScore > 0);
     const ranked = [];
-    for (const item of sorted) {
+    for (const item of filtered) {
       const userInfo = this.userInfoDataStore.get(['userInfos', item.playerId], {});
       const name = this.getDisplayName(item, userInfo);
       ranked.push({
@@ -215,6 +282,7 @@ class LevelRankService {
         score: item.score,
         combo: item.combo,
         timeMs: item.timeMs,
+        timeSeconds: Math.floor(item.timeMs / 1000),
         level: item.level,
         avatarId: typeof userInfo.avatarId === 'number' ? userInfo.avatarId : (typeof userInfo.avatarIndex === 'number' ? userInfo.avatarIndex : 0),
         avatarFrameId: typeof userInfo.avatarFrameId === 'number' ? userInfo.avatarFrameId : (typeof userInfo.frameIndex === 'number' ? userInfo.frameIndex : 0),
@@ -228,6 +296,9 @@ class LevelRankService {
       const selfIndex = ranked.findIndex((item) => item.playerId === playerId);
       if (selfIndex >= 0) {
         self = ranked[selfIndex];
+        if (this.dailyRankAchievementService) {
+          self.achievement = this.dailyRankAchievementService.getAchievement(playerId, date);
+        }
       }
     }
 

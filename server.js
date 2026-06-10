@@ -10,6 +10,7 @@ const { LevelRankService } = require('./level_rank_service');
 const { UserInfoService } = require('./user_info_service');
 const { RefreshTimeService } = require('./refresh_time_service');
 const { TravelService } = require('./travel_service');
+const { DailyRankAchievementService } = require('./daily_rank_achievement_service');
 
 function loadConfig() {
   const configPath = path.join(__dirname, 'server.config.json');
@@ -55,7 +56,12 @@ const userInfoDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'us
   version: 1,
   userInfos: {},
 });
-const levelRankService = new LevelRankService(levelRankDataStore, { logger: console, userInfoDataStore, dailySpecialDataStore });
+const dailyRankAchievementDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'daily_rank_achievement.json'), {
+  version: 1,
+  players: {},
+});
+const dailyRankAchievementService = new DailyRankAchievementService(dailyRankAchievementDataStore);
+const levelRankService = new LevelRankService(levelRankDataStore, { logger: console, userInfoDataStore, dailySpecialDataStore, dailyRankAchievementService });
 const userInfoService = new UserInfoService(userInfoDataStore);
 const refreshTimeService = new RefreshTimeService();
 const travelDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'travel_data.json'), {
@@ -67,6 +73,26 @@ const apiRoutes = new RouteRegistry({
   parseBody,
   sendJson,
 });
+
+function getPlayerIdFromUser(user) {
+  return user && (user.playerId || user.account);
+}
+
+function getUserInfoForLogin(user) {
+  const playerId = getPlayerIdFromUser(user);
+  if (!playerId) {
+    return null;
+  }
+
+  const userInfo = userInfoService.getUserInfo(playerId);
+  if (!userInfo.name && user && user.gameName) {
+    return userInfoService.patchUserInfo(playerId, {
+      name: user.gameName,
+      playerName: user.gameName,
+    });
+  }
+  return userInfo;
+}
 
 userInfoService.registerRoutes(apiRoutes);
 refreshTimeService.registerRoutes(apiRoutes);
@@ -110,13 +136,24 @@ apiRoutes.get('/api/rank/special/daily/leaderboard', async (ctx) => {
   ctx.json(200, { ok: true, date, playerId: playerId || '', top100: result.top100, self: result.self });
 });
 
+apiRoutes.get('/api/rank/achievement/:playerId', async (ctx) => {
+  const playerId = ctx.params.playerId;
+  const url = new URL(ctx.req.url, `http://${ctx.req.headers.host || `${HOST}:${PORT}`}`);
+  let date = url.searchParams.get('date');
+  if (!date) {
+    date = levelRankService.toDateString(new Date());
+  }
+  const achievement = dailyRankAchievementService.getAchievement(playerId, date);
+  ctx.json(200, { ok: true, playerId, date, achievement });
+});
+
 function sendJson(res, statusCode, body) {
   const payload = JSON.stringify(body);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type,X-Account,X-Token',
   });
   res.end(payload);
 }
@@ -232,8 +269,14 @@ async function routeUser(req, res, parts) {
   // POST /api/user/register
   if (req.method === 'POST' && parts.length === 3 && parts[2] === 'register') {
     const body = await parseBody(req);
-    const user = userDb.register(body.account, body.gameName);
-    sendJson(res, 200, { ok: true, user });
+    const user = userDb.register(body.account, body.gameName, body.playerId);
+    const userInfo = userInfoService.patchUserInfo(getPlayerIdFromUser(user), {
+      name: user.gameName,
+      playerName: user.gameName,
+      avatarId: body.avatarId,
+      avatarFrameId: body.avatarFrameId,
+    });
+    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo });
     return true;
   }
 
@@ -241,7 +284,8 @@ async function routeUser(req, res, parts) {
   if (req.method === 'POST' && parts.length === 3 && parts[2] === 'login') {
     const body = await parseBody(req);
     const user = userDb.login(body.account);
-    sendJson(res, 200, { ok: true, user });
+    const userInfo = getUserInfoForLogin(user);
+    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo });
     return true;
   }
 
