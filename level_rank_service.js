@@ -130,6 +130,19 @@ class LevelRankService {
       };
     }
 
+    // 更新完美连击记录
+    if (this.userInfoDataStore) {
+      this.userInfoDataStore.update(['userInfos', result.playerId], (current) => {
+        const merged = Object.assign({}, current || {});
+        if (result.perfectCombo) {
+          merged.perfectComboStreak = (merged.perfectComboStreak || 0) + 1;
+        } else {
+          merged.perfectComboStreak = 0;
+        }
+        return merged;
+      }, {});
+    }
+
     // 精简结算返回
     const top3 = specialRankInfo
       ? specialRankInfo.top100.slice(0, 3).map((item) => ({
@@ -149,6 +162,8 @@ class LevelRankService {
       combo: result.combo,
       timeMs: result.timeMs,
       specialScore: result.specialScore,
+      perfectCombo: result.perfectCombo,
+      perfectClear: result.perfectClear,
       beatPercent,
       totalPlayers,
       rank: specialRankInfo
@@ -364,6 +379,8 @@ class LevelRankService {
     const specialScore = input.specialScore !== undefined
       ? Math.max(0, Math.floor(toFiniteNumber(input.specialScore, 'specialScore')))
       : 0;
+    const perfectCombo = input.perfectCombo === true;
+    const perfectClear = input.perfectClear === true;
     const rawTimeMs = input.timeMs !== undefined
       ? toFiniteNumber(input.timeMs, 'timeMs')
       : toFiniteNumber(input.timeSeconds, 'timeSeconds') * 1000;
@@ -375,6 +392,8 @@ class LevelRankService {
       score,
       combo,
       specialScore,
+      perfectCombo,
+      perfectClear,
       timeMs,
       name: normalizeText(input.name)
         || normalizeText(input.nickname)
