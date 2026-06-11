@@ -18,6 +18,7 @@ function loadConfig() {
     host: '127.0.0.1',
     port: 8787,
     dbFile: './db/global_db.json',
+    hotUpdateDir: '../VITA/build/hotupdate',
     maxBodyBytes: 1024 * 1024,
   };
 
@@ -40,7 +41,19 @@ const config = loadConfig();
 const HOST = process.env.HOST || config.host;
 const PORT = Number(process.env.PORT || config.port);
 const DB_FILE = resolveDbFile(process.env.DB_FILE || config.dbFile);
+const HOT_UPDATE_DIR = path.resolve(__dirname, process.env.HOT_UPDATE_DIR || config.hotUpdateDir);
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || config.maxBodyBytes);
+
+const HOT_UPDATE_MIME_TYPES = {
+  '.json': 'application/json; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.ttf': 'font/ttf',
+};
 
 const db = new SimpleDb(DB_FILE);
 const userDb = new UserTable(path.join(path.dirname(DB_FILE), 'users.json'));
@@ -202,10 +215,65 @@ function parseRoute(req) {
 
 function routeHealth(req, res, parts) {
   if (req.method === 'GET' && parts.length === 1 && parts[0] === 'health') {
-    sendJson(res, 200, { ok: true, sections: SECTION_NAMES });
+    sendJson(res, 200, { ok: true, sections: SECTION_NAMES, hotUpdateDir: HOT_UPDATE_DIR });
     return true;
   }
   return false;
+}
+
+function routeHotUpdate(req, res, parts) {
+  if (req.method !== 'GET' || parts[0] !== 'hotupdate' || parts.length < 2) {
+    return false;
+  }
+
+  const relativePath = parts.slice(1).join(path.sep);
+  const filePath = path.resolve(HOT_UPDATE_DIR, relativePath);
+  const rootWithSeparator = HOT_UPDATE_DIR.endsWith(path.sep) ? HOT_UPDATE_DIR : HOT_UPDATE_DIR + path.sep;
+  if (filePath !== HOT_UPDATE_DIR && !filePath.startsWith(rootWithSeparator)) {
+    sendError(res, 403, 'invalid hot update path');
+    return true;
+  }
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    sendError(res, 404, 'hot update file not found');
+    return true;
+  }
+
+  const stat = fs.statSync(filePath);
+  const headers = {
+    'Accept-Ranges': 'bytes',
+    'Access-Control-Allow-Origin': '*',
+    'Cache-Control': path.extname(filePath).toLowerCase() === '.json'
+      ? 'no-store'
+      : 'public, max-age=31536000, immutable',
+    'Content-Type': HOT_UPDATE_MIME_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+  };
+  const range = req.headers.range;
+  if (!range) {
+    res.writeHead(200, Object.assign(headers, { 'Content-Length': stat.size }));
+    fs.createReadStream(filePath).pipe(res);
+    return true;
+  }
+
+  const match = /^bytes=(\d+)-(\d*)$/.exec(range);
+  if (!match) {
+    res.writeHead(416, Object.assign(headers, { 'Content-Range': `bytes */${stat.size}` }));
+    res.end();
+    return true;
+  }
+  const start = Number(match[1]);
+  const end = match[2] ? Math.min(Number(match[2]), stat.size - 1) : stat.size - 1;
+  if (start >= stat.size || end < start) {
+    res.writeHead(416, Object.assign(headers, { 'Content-Range': `bytes */${stat.size}` }));
+    res.end();
+    return true;
+  }
+
+  res.writeHead(206, Object.assign(headers, {
+    'Content-Length': end - start + 1,
+    'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+  }));
+  fs.createReadStream(filePath, { start, end }).pipe(res);
+  return true;
 }
 
 async function routeGlobal(req, res, parts) {
@@ -364,6 +432,7 @@ async function handleRequest(req, res) {
 
   try {
     if (routeHealth(req, res, parts)) return;
+    if (routeHotUpdate(req, res, parts)) return;
     if (await routeUser(req, res, parts)) return;
     if (await apiRoutes.handle(req, res, parts)) return;
     if (await routeGlobal(req, res, parts)) return;
@@ -378,4 +447,6 @@ const server = http.createServer(handleRequest);
 server.listen(PORT, HOST, () => {
   console.log(`Global settings server listening on http://${HOST}:${PORT}`);
   console.log(`Database file: ${DB_FILE}`);
+  console.log(`Hot update URL: http://${HOST}:${PORT}/hotupdate`);
+  console.log(`Hot update directory: ${HOT_UPDATE_DIR}`);
 });
