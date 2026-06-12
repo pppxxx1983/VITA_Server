@@ -133,6 +133,7 @@ class UserInfoService {
       avatarIndex: 0,
       avatarFrameId: 0,
       frameIndex: 0,
+      perfectComboStreak: 0,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
