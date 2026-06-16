@@ -39,10 +39,10 @@ class UserInfoService {
   }
 
   registerRoutes(routes) {
-    routes.get('/api/user/info/:playerId', (ctx) => {
+    routes.get('/api/user/info/:playerId', async (ctx) => {
       const playerId = this.normalizePlayerId(ctx.params.playerId);
       console.log(`[userInfo] GET /api/user/info/${playerId}`);
-      ctx.json(200, { ok: true, playerId, userInfo: this.getUserInfo(playerId) });
+      ctx.json(200, { ok: true, playerId, userInfo: await this.getUserInfo(playerId) });
     });
 
     routes.post('/api/user/info/:playerId', (ctx) => this.patchUserInfoRoute(ctx));
@@ -53,35 +53,29 @@ class UserInfoService {
     const playerId = this.normalizePlayerId(ctx.params.playerId);
     const body = await ctx.body();
     console.log(`[userInfo] ${ctx.req.method} /api/user/info/${playerId}`, JSON.stringify(body));
-    const userInfo = this.patchUserInfo(playerId, body);
+    const userInfo = await this.patchUserInfo(playerId, body);
     ctx.json(200, { ok: true, playerId, userInfo });
   }
 
-  getUserInfo(playerId) {
-    const saved = this.dataStore.get([this.rootKey, playerId], null);
+  async getUserInfo(playerId) {
+    const saved = await this.dataStore.get(playerId);
     const exists = isObject(saved);
     const userInfo = this.normalizeUserInfo(playerId, exists ? saved : {}, false);
     userInfo.exists = exists;
     return userInfo;
   }
 
-  patchUserInfo(playerId, patch) {
+  async patchUserInfo(playerId, patch) {
     if (!isObject(patch)) {
       throw new Error('userInfo body must be a JSON object');
     }
 
-    return this.dataStore.update([this.rootKey, playerId], (current) => {
-      const merged = Object.assign({}, isObject(current) ? current : {});
-      const normalizedPatch = this.normalizeUserInfo(playerId, patch, true);
-      Object.assign(merged, normalizedPatch, {
-        playerId,
-        updatedAt: nowIso(),
-      });
-      if (!merged.createdAt) {
-        merged.createdAt = merged.updatedAt;
-      }
-      return merged;
-    }, this.defaultUserInfo(playerId));
+    const current = await this.dataStore.get(playerId);
+    const merged = Object.assign({}, isObject(current) ? current : this.defaultUserInfo(playerId));
+    const normalizedPatch = this.normalizeUserInfo(playerId, patch, true);
+    Object.assign(merged, normalizedPatch, { playerId, updatedAt: nowIso() });
+    if (!merged.createdAt) merged.createdAt = merged.updatedAt;
+    return this.dataStore.upsert(playerId, merged);
   }
 
   normalizeUserInfo(playerId, data, partial) {

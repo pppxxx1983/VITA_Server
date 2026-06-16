@@ -2,6 +2,17 @@
 
 This is a zero-dependency Node.js HTTP server. It stores client `GlobalSettings` data in a simple JSON database and splits global data into sections.
 
+Role accounts, role profiles, level scores, daily rankings, and rank achievements are stored in MySQL. Other game sections continue to use the existing JSON storage.
+
+## MySQL setup
+
+1. Apply `database/schema.sql` with MySQL 8.0 or newer.
+2. Configure `server.config.json` or the `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_DATABASE` environment variables.
+3. Run `npm install`.
+4. Run `npm run migrate:mysql` once to import the existing role and ranking JSON files.
+
+The migration is idempotent. Keep the files under `db/` as a backup until the migrated data has been checked in the administration UI.
+
 ## Server Config
 
 Edit:

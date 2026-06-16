@@ -3,5 +3,13 @@
   "port": 8788,
   "hotUpdateDir": "../VITA/build/hotupdate",
   "dbFile": "./db/global_db.json",
-  "maxBodyBytes": 1048576
+  "maxBodyBytes": 1048576,
+  "mysql": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "root",
+    "password": "YuanQiWangLuo_123123",
+    "database": "vita_game",
+    "connectionLimit": 10
+  }
 }

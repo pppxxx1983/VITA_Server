@@ -31,14 +31,14 @@ class LevelRankService {
     this.logger = options.logger || console;
   }
 
-  submitResult(input) {
+  async submitResult(input) {
     this.log('submitResult input', this.summarizeInput(input));
     const result = this.normalizeResult(input);
     this.log('submitResult normalized', result);
-    const saved = this.saveScore(result.level, result);
+    const saved = await this.saveScore(result.level, result);
     this.log('submitResult saved', saved);
-    const beatPercent = this.calculateBeatPercent(saved);
-    const totalPlayers = this.getLevelCount(result.level);
+    const beatPercent = await this.calculateBeatPercent(saved);
+    const totalPlayers = await this.getLevelCount(result.level);
     this.log('submitResult result', {
       playerId: result.playerId,
       level: result.level,
@@ -55,10 +55,10 @@ class LevelRankService {
     let specialRankInfo = null;
     if (result.specialScore > 0) {
       const date = this.toDateString(new Date());
-      const beforeLeaderboard = this.getDailySpecialLeaderboard(date, result.playerId);
+      const beforeLeaderboard = await this.getDailySpecialLeaderboard(date, result.playerId);
       const oldRank = beforeLeaderboard.self ? beforeLeaderboard.self.rank : null;
-      this.saveSpecialScore(result);
-      const afterLeaderboard = this.getDailySpecialLeaderboard(date, result.playerId);
+      await this.saveSpecialScore(result);
+      const afterLeaderboard = await this.getDailySpecialLeaderboard(date, result.playerId);
       const newRank = afterLeaderboard.self ? afterLeaderboard.self.rank : null;
 
       const isNew = oldRank === null && newRank !== null;
@@ -66,7 +66,6 @@ class LevelRankService {
       const isDown = oldRank !== null && newRank !== null && newRank > oldRank;
       const rankChange = isNew ? 'new entry' : (isUp ? `rank up ${oldRank - newRank} places` : (isDown ? `rank down ${newRank - oldRank} places` : 'rank unchanged'));
       const rankEventType = isNew ? 'new_entry' : (isUp ? 'rank_up' : (isDown ? 'rank_down' : 'unchanged'));
-
       // 前3名晋升标记
       const enteredTop3 = (oldRank === null || oldRank > 3) && newRank !== null && newRank <= 3;
       const top3RankUp = oldRank !== null && oldRank <= 3 && newRank !== null && newRank < oldRank;
@@ -88,8 +87,8 @@ class LevelRankService {
       let achievement = null;
       let recordResult = null;
       if (this.dailyRankAchievementService && newRank !== null && newRank <= 3) {
-        recordResult = this.dailyRankAchievementService.recordRank(result.playerId, date, newRank);
-        achievement = this.dailyRankAchievementService.getAchievement(result.playerId, date);
+        recordResult = await this.dailyRankAchievementService.recordRank(result.playerId, date, newRank);
+        achievement = await this.dailyRankAchievementService.getAchievement(result.playerId, date);
         this.log('rank achievement recorded', {
           playerId: result.playerId,
           date,
@@ -132,15 +131,7 @@ class LevelRankService {
 
     // 更新完美连击记录
     if (this.userInfoDataStore) {
-      this.userInfoDataStore.update(['userInfos', result.playerId], (current) => {
-        const merged = Object.assign({}, current || {});
-        if (result.perfectCombo) {
-          merged.perfectComboStreak = (merged.perfectComboStreak || 0) + 1;
-        } else {
-          merged.perfectComboStreak = 0;
-        }
-        return merged;
-      }, {});
+      await this.userInfoDataStore.updatePerfectComboStreak(result.playerId, result.perfectCombo);
     }
 
     // 精简结算返回
@@ -185,18 +176,16 @@ class LevelRankService {
     };
   }
 
-  saveScore(level, result) {
-    const record = Object.assign({}, result, {
-      level,
-      id: `${Date.now()}_${Math.floor(Math.random() * 1000000)}`,
-      updatedAt: new Date().toISOString(),
-    });
-    return this.dataStore.update(['levels', String(level), 'scores'], (scores) => {
-      return Array.isArray(scores) ? scores.concat([record]) : [record];
-    }, []).slice(-1)[0];
+  async saveScore(level, result) {
+    return this.dataStore.saveLevelScore(Object.assign({}, result, { level }));
   }
 
-  saveSpecialScore(result) {
+  async saveSpecialScore(result) {
+    const date = this.toDateString(new Date());
+    return this.dailySpecialDataStore.saveDailySpecial(date, result);
+  }
+
+  legacySaveSpecialScore(result) {
     const date = this.toDateString(new Date());
     const record = Object.assign({}, result, {
       id: `${Date.now()}_${Math.floor(Math.random() * 1000000)}`,
@@ -222,13 +211,12 @@ class LevelRankService {
     }, []);
   }
 
-  listDailySpecialScores(date) {
-    const scores = this.dailySpecialDataStore.get(['dailySpecial', date], []);
-    return Array.isArray(scores) ? scores : [];
+  async listDailySpecialScores(date) {
+    return this.dailySpecialDataStore.listDailySpecial(date);
   }
 
-  aggregateDailySpecialScores(date) {
-    const scores = this.listDailySpecialScores(date);
+  async aggregateDailySpecialScores(date) {
+    const scores = await this.listDailySpecialScores(date);
     const playerMap = new Map();
     for (const item of scores) {
       if (!playerMap.has(item.playerId)) {
@@ -246,8 +234,8 @@ class LevelRankService {
     return Array.from(playerMap.values());
   }
 
-  getDailySpecialRank(date, limit = 50) {
-    const aggregated = this.aggregateDailySpecialScores(date);
+  async getDailySpecialRank(date, limit = 50) {
+    const aggregated = await this.aggregateDailySpecialScores(date);
     const filtered = aggregated.filter((item) => item.specialScore > 0);
     const sorted = filtered.slice().sort((a, b) => {
       if (b.specialScore !== a.specialScore) return b.specialScore - a.specialScore;
@@ -266,14 +254,12 @@ class LevelRankService {
     return `${y}-${m}-${d}`;
   }
 
-  getLatestDailySpecialDate() {
-    const dates = Object.keys(this.dailySpecialDataStore.get(['dailySpecial'], {}));
-    if (dates.length === 0) return this.toDateString(new Date());
-    return dates.sort().slice(-1)[0];
+  async getLatestDailySpecialDate() {
+    return await this.dailySpecialDataStore.getLatestDailySpecialDate() || this.toDateString(new Date());
   }
 
-  getDailySpecialLeaderboard(date, playerId, limit = 100) {
-    const aggregated = this.aggregateDailySpecialScores(date);
+  async getDailySpecialLeaderboard(date, playerId, limit = 100) {
+    const aggregated = await this.aggregateDailySpecialScores(date);
 
     // 排序：specialScore 降序 -> timeMs 升序 -> updatedAt 升序
     const sorted = aggregated.slice().sort((a, b) => {
@@ -286,7 +272,7 @@ class LevelRankService {
     const filtered = sorted.filter((item) => item.specialScore > 0);
     const ranked = [];
     for (const item of filtered) {
-      const userInfo = this.userInfoDataStore.get(['userInfos', item.playerId], {});
+      const userInfo = await this.userInfoDataStore.get(item.playerId) || {};
       const name = this.getDisplayName(item, userInfo);
       ranked.push({
         rank: ranked.length + 1,
@@ -312,7 +298,7 @@ class LevelRankService {
       if (selfIndex >= 0) {
         self = ranked[selfIndex];
         if (this.dailyRankAchievementService) {
-          self.achievement = this.dailyRankAchievementService.getAchievement(playerId, date);
+          self.achievement = await this.dailyRankAchievementService.getAchievement(playerId, date);
         }
       }
     }
@@ -349,18 +335,12 @@ class LevelRankService {
       || '';
   }
 
-  listScores(level) {
-    const players = this.dataStore.get(['levels', String(level), 'players'], {});
-    const scores = this.dataStore.get(['levels', String(level), 'scores'], []);
-    const legacyScores = players && typeof players === 'object' && !Array.isArray(players)
-      ? Object.values(players)
-      : [];
-    const scoreRecords = Array.isArray(scores) ? scores : [];
-    return legacyScores.concat(scoreRecords);
+  async listScores(level) {
+    return this.dataStore.listLevelScores(level);
   }
 
-  getLevelCount(level) {
-    return this.listScores(level).length;
+  async getLevelCount(level) {
+    return (await this.listScores(level)).length;
   }
 
   normalizeResult(input) {
@@ -409,10 +389,10 @@ class LevelRankService {
     return 0;
   }
 
-  calculateBeatPercent(current) {
+  async calculateBeatPercent(current) {
     const level = current.level;
     const playerId = current.playerId;
-    const scores = this.listScores(level);
+    const scores = await this.listScores(level);
     this.log('calculateBeatPercent start', {
       level,
       playerId,

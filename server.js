@@ -3,7 +3,6 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 const { SECTION_NAMES, SimpleDb } = require('./simple_db');
-const { UserTable } = require('./user_table');
 const { JsonDataStore } = require('./json_data_store');
 const { RouteRegistry } = require('./route_registry');
 const { LevelRankService } = require('./level_rank_service');
@@ -11,6 +10,12 @@ const { UserInfoService } = require('./user_info_service');
 const { RefreshTimeService } = require('./refresh_time_service');
 const { TravelService } = require('./travel_service');
 const { DailyRankAchievementService } = require('./daily_rank_achievement_service');
+const { createMysqlPool, verifyMysql } = require('./mysql_database');
+const { MysqlUserTable } = require('./mysql_user_table');
+const { MysqlProfileRepository } = require('./mysql_profile_repository');
+const { MysqlRankRepository } = require('./mysql_rank_repository');
+const { MysqlAchievementRepository } = require('./mysql_achievement_repository');
+const { TrackingRepository } = require('./tracking_repository');
 
 function loadConfig() {
   const configPath = path.join(__dirname, 'server.config.json');
@@ -43,6 +48,7 @@ const PORT = Number(process.env.PORT || config.port);
 const DB_FILE = resolveDbFile(process.env.DB_FILE || config.dbFile);
 const HOT_UPDATE_DIR = path.resolve(__dirname, process.env.HOT_UPDATE_DIR || config.hotUpdateDir);
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || config.maxBodyBytes);
+const mysqlPool = createMysqlPool(config);
 
 const HOT_UPDATE_MIME_TYPES = {
   '.json': 'application/json; charset=utf-8',
@@ -56,26 +62,19 @@ const HOT_UPDATE_MIME_TYPES = {
 };
 
 const db = new SimpleDb(DB_FILE);
-const userDb = new UserTable(path.join(path.dirname(DB_FILE), 'users.json'));
-const levelRankDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'level_rank.json'), {
-  version: 1,
-  levels: {},
+const userDb = new MysqlUserTable(mysqlPool);
+const rankRepository = new MysqlRankRepository(mysqlPool);
+const profileRepository = new MysqlProfileRepository(mysqlPool);
+const achievementRepository = new MysqlAchievementRepository(mysqlPool);
+const trackingRepository = new TrackingRepository(mysqlPool);
+const dailyRankAchievementService = new DailyRankAchievementService(achievementRepository);
+const levelRankService = new LevelRankService(rankRepository, {
+  logger: console,
+  userInfoDataStore: profileRepository,
+  dailySpecialDataStore: rankRepository,
+  dailyRankAchievementService,
 });
-const dailySpecialDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'daily_special.json'), {
-  version: 1,
-  dailySpecial: {},
-});
-const userInfoDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'user_info.json'), {
-  version: 1,
-  userInfos: {},
-});
-const dailyRankAchievementDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'daily_rank_achievement.json'), {
-  version: 1,
-  players: {},
-});
-const dailyRankAchievementService = new DailyRankAchievementService(dailyRankAchievementDataStore);
-const levelRankService = new LevelRankService(levelRankDataStore, { logger: console, userInfoDataStore, dailySpecialDataStore, dailyRankAchievementService });
-const userInfoService = new UserInfoService(userInfoDataStore);
+const userInfoService = new UserInfoService(profileRepository);
 const refreshTimeService = new RefreshTimeService();
 const travelDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'travel_data.json'), {
   version: 1,
@@ -91,13 +90,13 @@ function getPlayerIdFromUser(user) {
   return user && (user.playerId || user.account);
 }
 
-function getUserInfoForLogin(user) {
+async function getUserInfoForLogin(user) {
   const playerId = getPlayerIdFromUser(user);
   if (!playerId) {
     return null;
   }
 
-  const userInfo = userInfoService.getUserInfo(playerId);
+  const userInfo = await userInfoService.getUserInfo(playerId);
   if (!userInfo.name && user && user.gameName) {
     return userInfoService.patchUserInfo(playerId, {
       name: user.gameName,
@@ -111,6 +110,16 @@ userInfoService.registerRoutes(apiRoutes);
 refreshTimeService.registerRoutes(apiRoutes);
 travelService.registerRoutes(apiRoutes);
 
+apiRoutes.post('/api/tracking/events', async (ctx) => {
+  const body = await ctx.body();
+  const forwarded = ctx.req.headers['x-forwarded-for'];
+  const userIp = Array.isArray(forwarded)
+    ? forwarded[0]
+    : (forwarded ? String(forwarded).split(',')[0].trim() : ctx.req.socket.remoteAddress);
+  const result = await trackingRepository.insertEvents(body, userIp);
+  ctx.json(200, { ok: true, ...result });
+});
+
 apiRoutes.post('/api/rank/settlement', async (ctx) => {
   const body = await ctx.body();
   console.log('[rank:settlement] POST /api/rank/settlement body', JSON.stringify({
@@ -123,7 +132,7 @@ apiRoutes.post('/api/rank/settlement', async (ctx) => {
     timeSeconds: body && body.timeSeconds,
     keys: body && typeof body === 'object' ? Object.keys(body) : [],
   }));
-  const rank = levelRankService.submitResult(body);
+  const rank = await levelRankService.submitResult(body);
   console.log('[rank:settlement] POST /api/rank/settlement response', JSON.stringify(rank));
   ctx.json(200, { ok: true, rank });
 });
@@ -132,9 +141,9 @@ apiRoutes.get('/api/rank/special/daily', async (ctx) => {
   const url = new URL(ctx.req.url, `http://${ctx.req.headers.host || `${HOST}:${PORT}`}`);
   let date = url.searchParams.get('date');
   if (!date) {
-    date = levelRankService.getLatestDailySpecialDate();
+    date = await levelRankService.getLatestDailySpecialDate();
   }
-  const rank = levelRankService.getDailySpecialRank(date);
+  const rank = await levelRankService.getDailySpecialRank(date);
   ctx.json(200, { ok: true, date, rank });
 });
 
@@ -143,9 +152,9 @@ apiRoutes.get('/api/rank/special/daily/leaderboard', async (ctx) => {
   let date = url.searchParams.get('date');
   const playerId = url.searchParams.get('playerId');
   if (!date) {
-    date = levelRankService.getLatestDailySpecialDate();
+    date = await levelRankService.getLatestDailySpecialDate();
   }
-  const result = levelRankService.getDailySpecialLeaderboard(date, playerId || '', 100);
+  const result = await levelRankService.getDailySpecialLeaderboard(date, playerId || '', 100);
   ctx.json(200, { ok: true, date, playerId: playerId || '', top100: result.top100, self: result.self });
 });
 
@@ -156,7 +165,7 @@ apiRoutes.get('/api/rank/achievement/:playerId', async (ctx) => {
   if (!date) {
     date = levelRankService.toDateString(new Date());
   }
-  const achievement = dailyRankAchievementService.getAchievement(playerId, date);
+  const achievement = await dailyRankAchievementService.getAchievement(playerId, date);
   ctx.json(200, { ok: true, playerId, date, achievement });
 });
 
@@ -337,8 +346,8 @@ async function routeUser(req, res, parts) {
   // POST /api/user/register
   if (req.method === 'POST' && parts.length === 3 && parts[2] === 'register') {
     const body = await parseBody(req);
-    const user = userDb.register(body.account, body.gameName, body.playerId);
-    const userInfo = userInfoService.patchUserInfo(getPlayerIdFromUser(user), {
+    const user = await userDb.register(body.account, body.gameName, body.playerId);
+    const userInfo = await userInfoService.patchUserInfo(getPlayerIdFromUser(user), {
       name: user.gameName,
       playerName: user.gameName,
       avatarId: body.avatarId,
@@ -351,8 +360,8 @@ async function routeUser(req, res, parts) {
   // POST /api/user/login
   if (req.method === 'POST' && parts.length === 3 && parts[2] === 'login') {
     const body = await parseBody(req);
-    const user = userDb.login(body.account);
-    const userInfo = getUserInfoForLogin(user);
+    const user = await userDb.login(body.account);
+    const userInfo = await getUserInfoForLogin(user);
     sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo });
     return true;
   }
@@ -360,18 +369,18 @@ async function routeUser(req, res, parts) {
   // POST /api/user/logout
   if (req.method === 'POST' && parts.length === 3 && parts[2] === 'logout') {
     const body = await parseBody(req);
-    const user = userDb.logout(body.account);
+    const user = await userDb.logout(body.account);
     sendJson(res, 200, { ok: true, user });
     return true;
   }
 
   // GET /api/user/list
   if (req.method === 'GET' && parts.length === 3 && parts[2] === 'list') {
-    if (!userDb.verifyRequestHeaders(req.headers)) {
+    if (!await userDb.verifyRequestHeaders(req.headers)) {
       sendError(res, 401, 'unauthorized');
       return true;
     }
-    const users = userDb.listUsers();
+    const users = await userDb.listUsers();
     sendJson(res, 200, { ok: true, count: users.length, users });
     return true;
   }
@@ -379,11 +388,11 @@ async function routeUser(req, res, parts) {
   // GET /api/user/profile/:account
   if (req.method === 'GET' && parts.length === 4 && parts[2] === 'profile') {
     const account = parts[3];
-    if (!userDb.verifyRequestHeaders(req.headers)) {
+    if (!await userDb.verifyRequestHeaders(req.headers)) {
       sendError(res, 401, 'unauthorized');
       return true;
     }
-    const user = userDb.getUser(account);
+    const user = await userDb.getUser(account);
     if (!user) {
       sendError(res, 404, 'user not found');
       return true;
@@ -395,12 +404,12 @@ async function routeUser(req, res, parts) {
   // PATCH /api/user/profile/:account
   if (req.method === 'PATCH' && parts.length === 4 && parts[2] === 'profile') {
     const account = parts[3];
-    if (!userDb.verifyRequestHeaders(req.headers)) {
+    if (!await userDb.verifyRequestHeaders(req.headers)) {
       sendError(res, 401, 'unauthorized');
       return true;
     }
     const body = await parseBody(req);
-    const user = userDb.updateGameName(account, body.gameName);
+    const user = await userDb.updateGameName(account, body.gameName);
     sendJson(res, 200, { ok: true, user });
     return true;
   }
@@ -408,11 +417,11 @@ async function routeUser(req, res, parts) {
   // DELETE /api/user/account/:account
   if (req.method === 'DELETE' && parts.length === 4 && parts[2] === 'account') {
     const account = parts[3];
-    if (!userDb.verifyRequestHeaders(req.headers)) {
+    if (!await userDb.verifyRequestHeaders(req.headers)) {
       sendError(res, 401, 'unauthorized');
       return true;
     }
-    const deleted = userDb.delete(account);
+    const deleted = await userDb.delete(account);
     sendJson(res, 200, { ok: true, deleted });
     return true;
   }
@@ -444,9 +453,18 @@ async function handleRequest(req, res) {
 
 const server = http.createServer(handleRequest);
 
-server.listen(PORT, HOST, () => {
-  console.log(`Global settings server listening on http://${HOST}:${PORT}`);
-  console.log(`Database file: ${DB_FILE}`);
-  console.log(`Hot update URL: http://${HOST}:${PORT}/hotupdate`);
-  console.log(`Hot update directory: ${HOT_UPDATE_DIR}`);
+async function startServer() {
+  await verifyMysql(mysqlPool);
+  await trackingRepository.ensureTable();
+  server.listen(PORT, HOST, () => {
+    console.log(`Global settings server listening on http://${HOST}:${PORT}`);
+    console.log(`MySQL database: ${process.env.MYSQL_DATABASE || (config.mysql && config.mysql.database) || 'vita_game'}`);
+    console.log(`Hot update URL: http://${HOST}:${PORT}/hotupdate`);
+    console.log(`Hot update directory: ${HOT_UPDATE_DIR}`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error('Server startup failed:', error.message);
+  process.exitCode = 1;
 });
