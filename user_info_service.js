@@ -121,6 +121,11 @@ class UserInfoService {
       output.nickname = name;
     }
 
+    const ageSegment = normalizeId(data.ageSegment, 'ageSegment');
+    if (ageSegment !== undefined) {
+      output.ageSegment = ageSegment;
+    }
+
     if (data.registrationTime !== undefined) {
       output.registrationTime = data.registrationTime;
     }
