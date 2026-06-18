@@ -24,14 +24,18 @@ async function migrateUsers() {
   const data = readJson('users.json', { users: {} });
   let count = 0;
   for (const user of Object.values(data.users || {})) {
+    const registrationTime = user.registrationTime ? mysqlDate(user.registrationTime) : mysqlDate(user.createdAt);
+    const lastLoginTime = user.lastLoginTime ? mysqlDate(user.lastLoginTime) : null;
     await pool.execute(
-      `INSERT INTO game_users (account, player_id, game_name, token, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO game_users (account, player_id, game_name, token, registration_time, last_login_time, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          player_id = VALUES(player_id), game_name = VALUES(game_name),
-         token = VALUES(token), updated_at = VALUES(updated_at)`,
+         token = VALUES(token), registration_time = VALUES(registration_time),
+         last_login_time = VALUES(last_login_time), updated_at = VALUES(updated_at)`,
       [user.account, user.playerId || user.account, user.gameName || user.account,
-        user.token || null, mysqlDate(user.createdAt), mysqlDate(user.updatedAt)]
+        user.token || null, registrationTime, lastLoginTime,
+        mysqlDate(user.createdAt), mysqlDate(user.updatedAt)]
     );
     count++;
   }

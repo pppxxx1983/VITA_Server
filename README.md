@@ -199,7 +199,18 @@ api.getGlobal().then((global) => GlobalSettings.setAll(global));
 
 ## User Info
 
-User info is handled by `user_info_service.js`, using the shared `JsonDataStore` and `RouteRegistry`.
+User info (role profile) is handled by `user_info_service.js`, backed by MySQL (`player_profiles`).
+
+Profile fields include:
+
+- `playerId`
+- `name` / `nickname`
+- `avatarId` / `avatarIndex`
+- `avatarFrameId` / `frameIndex`
+- `perfectComboStreak`
+- `registrationTime` — set once when the role is created
+- `lastLoginTime` — updated on every login
+- `createdAt` / `updatedAt`
 
 ```http
 PATCH /api/user/info/player_001

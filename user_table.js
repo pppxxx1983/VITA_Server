@@ -86,13 +86,16 @@ class UserTable {
       throw new Error('account already exists');
     }
 
+    const now = nowIso();
     const user = {
       account,
       gameName,
       playerId: playerId && typeof playerId === 'string' ? playerId : account,
       token: generateToken(),
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
+      registrationTime: now,
+      lastLoginTime: now,
+      createdAt: now,
+      updatedAt: now,
     };
 
     this.data.users[account] = user;
@@ -172,6 +175,7 @@ class UserTable {
       user.playerId = user.account;
     }
     user.token = generateToken();
+    user.lastLoginTime = nowIso();
     user.updatedAt = nowIso();
     this.flush();
     return this._safeUser(user, true);
@@ -256,6 +260,8 @@ class UserTable {
       account: user.account,
       gameName: user.gameName,
       playerId: user.playerId || user.account,
+      registrationTime: user.registrationTime,
+      lastLoginTime: user.lastLoginTime,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };

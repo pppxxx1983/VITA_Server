@@ -16,6 +16,7 @@ const { MysqlProfileRepository } = require('./mysql_profile_repository');
 const { MysqlRankRepository } = require('./mysql_rank_repository');
 const { MysqlAchievementRepository } = require('./mysql_achievement_repository');
 const { TrackingRepository } = require('./tracking_repository');
+const { DailyStatsRepository } = require('./daily_stats_repository');
 
 function loadConfig() {
   const configPath = path.join(__dirname, 'server.config.json');
@@ -67,6 +68,7 @@ const rankRepository = new MysqlRankRepository(mysqlPool);
 const profileRepository = new MysqlProfileRepository(mysqlPool);
 const achievementRepository = new MysqlAchievementRepository(mysqlPool);
 const trackingRepository = new TrackingRepository(mysqlPool);
+const dailyStatsRepository = new DailyStatsRepository(mysqlPool);
 const dailyRankAchievementService = new DailyRankAchievementService(achievementRepository);
 const levelRankService = new LevelRankService(rankRepository, {
   logger: console,
@@ -74,7 +76,7 @@ const levelRankService = new LevelRankService(rankRepository, {
   dailySpecialDataStore: rankRepository,
   dailyRankAchievementService,
 });
-const userInfoService = new UserInfoService(profileRepository);
+const userInfoService = new UserInfoService(profileRepository, { dailyStatsRepository });
 const refreshTimeService = new RefreshTimeService();
 const travelDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'travel_data.json'), {
   version: 1,
@@ -347,6 +349,11 @@ async function routeUser(req, res, parts) {
   if (req.method === 'POST' && parts.length === 3 && parts[2] === 'register') {
     const body = await parseBody(req);
     const user = await userDb.register(body.account, body.gameName, body.playerId);
+    try {
+      await dailyStatsRepository.recordNewUser(new Date());
+    } catch (error) {
+      console.error('[register] failed to record daily stats:', error.message);
+    }
     const userInfo = await userInfoService.patchUserInfo(getPlayerIdFromUser(user), {
       name: user.gameName,
       playerName: user.gameName,
@@ -361,6 +368,19 @@ async function routeUser(req, res, parts) {
   if (req.method === 'POST' && parts.length === 3 && parts[2] === 'login') {
     const body = await parseBody(req);
     const user = await userDb.login(body.account);
+    const playerId = getPlayerIdFromUser(user);
+    if (playerId) {
+      try {
+        await profileRepository.updateLastLoginTime(playerId);
+      } catch (error) {
+        console.error('[login] failed to update profile lastLoginTime:', error.message);
+      }
+    }
+    try {
+      await dailyStatsRepository.recordLogin(new Date());
+    } catch (error) {
+      console.error('[login] failed to record daily stats:', error.message);
+    }
     const userInfo = await getUserInfoForLogin(user);
     sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo });
     return true;
@@ -426,6 +446,24 @@ async function routeUser(req, res, parts) {
     return true;
   }
 
+  // POST /api/payment/record
+  if (req.method === 'POST' && parts.length === 3 && parts[0] === 'api' && parts[1] === 'payment' && parts[2] === 'record') {
+    const body = await parseBody(req);
+    if (!body.playerId || typeof body.amount !== 'number' || body.amount <= 0) {
+      sendError(res, 400, 'playerId and positive amount are required');
+      return true;
+    }
+    const result = await dailyStatsRepository.recordPayment(
+      String(body.playerId),
+      body.amount,
+      body.currency,
+      body.productId,
+      body.paidAt ? new Date(body.paidAt) : null,
+    );
+    sendJson(res, 200, { ok: true, paymentId: result.id });
+    return true;
+  }
+
   return false;
 }
 
@@ -456,6 +494,7 @@ const server = http.createServer(handleRequest);
 async function startServer() {
   await verifyMysql(mysqlPool);
   await trackingRepository.ensureTable();
+  await dailyStatsRepository.ensureTable();
   server.listen(PORT, HOST, () => {
     console.log(`Global settings server listening on http://${HOST}:${PORT}`);
     console.log(`MySQL database: ${process.env.MYSQL_DATABASE || (config.mysql && config.mysql.database) || 'vita_game'}`);

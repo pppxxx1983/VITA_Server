@@ -35,6 +35,7 @@ function normalizeText(value) {
 class UserInfoService {
   constructor(dataStore, options = {}) {
     this.dataStore = dataStore;
+    this.dailyStatsRepository = options.dailyStatsRepository || null;
     this.rootKey = options.rootKey || 'userInfos';
   }
 
@@ -42,7 +43,9 @@ class UserInfoService {
     routes.get('/api/user/info/:playerId', async (ctx) => {
       const playerId = this.normalizePlayerId(ctx.params.playerId);
       console.log(`[userInfo] GET /api/user/info/${playerId}`);
-      ctx.json(200, { ok: true, playerId, userInfo: await this.getUserInfo(playerId) });
+      const userInfo = await this.getUserInfo(playerId);
+      await this.recordActivity(playerId);
+      ctx.json(200, { ok: true, playerId, userInfo });
     });
 
     routes.post('/api/user/info/:playerId', (ctx) => this.patchUserInfoRoute(ctx));
@@ -54,6 +57,7 @@ class UserInfoService {
     const body = await ctx.body();
     console.log(`[userInfo] ${ctx.req.method} /api/user/info/${playerId}`, JSON.stringify(body));
     const userInfo = await this.patchUserInfo(playerId, body);
+    await this.recordActivity(playerId);
     ctx.json(200, { ok: true, playerId, userInfo });
   }
 
@@ -75,7 +79,17 @@ class UserInfoService {
     const normalizedPatch = this.normalizeUserInfo(playerId, patch, true);
     Object.assign(merged, normalizedPatch, { playerId, updatedAt: nowIso() });
     if (!merged.createdAt) merged.createdAt = merged.updatedAt;
+    if (!merged.registrationTime) merged.registrationTime = merged.createdAt;
     return this.dataStore.upsert(playerId, merged);
+  }
+
+  async recordActivity(playerId) {
+    if (!this.dailyStatsRepository) return;
+    try {
+      await this.dailyStatsRepository.recordPlayerActivity(playerId, new Date());
+    } catch (error) {
+      console.error(`[userInfo] failed to record activity for ${playerId}:`, error.message);
+    }
   }
 
   normalizeUserInfo(playerId, data, partial) {
@@ -107,6 +121,13 @@ class UserInfoService {
       output.nickname = name;
     }
 
+    if (data.registrationTime !== undefined) {
+      output.registrationTime = data.registrationTime;
+    }
+    if (data.lastLoginTime !== undefined) {
+      output.lastLoginTime = data.lastLoginTime;
+    }
+
     if (!partial) {
       return Object.assign(output, clone(data || {}), {
         playerId,
@@ -121,6 +142,7 @@ class UserInfoService {
   }
 
   defaultUserInfo(playerId) {
+    const now = nowIso();
     return {
       playerId,
       avatarId: 0,
@@ -128,8 +150,10 @@ class UserInfoService {
       avatarFrameId: 0,
       frameIndex: 0,
       perfectComboStreak: 0,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
+      registrationTime: now,
+      lastLoginTime: null,
+      createdAt: now,
+      updatedAt: now,
     };
   }
 

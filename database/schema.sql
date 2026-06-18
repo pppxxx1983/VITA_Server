@@ -6,9 +6,12 @@ CREATE TABLE IF NOT EXISTS game_users (
   player_id VARCHAR(191) NOT NULL UNIQUE,
   game_name VARCHAR(191) NOT NULL,
   token CHAR(64) NULL,
+  registration_time DATETIME(3) NULL,
+  last_login_time DATETIME(3) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  INDEX idx_game_users_token (token)
+  INDEX idx_game_users_token (token),
+  INDEX idx_game_users_last_login (last_login_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS player_profiles (
@@ -18,6 +21,8 @@ CREATE TABLE IF NOT EXISTS player_profiles (
   avatar_frame_id INT UNSIGNED NOT NULL DEFAULT 0,
   perfect_combo_streak INT UNSIGNED NOT NULL DEFAULT 0,
   extra_data JSON NULL,
+  registration_time DATETIME(3) NULL,
+  last_login_time DATETIME(3) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   INDEX idx_player_profiles_name (name),
@@ -82,4 +87,56 @@ CREATE TABLE IF NOT EXISTS tracking_events (
   INDEX idx_tracking_event_time (event_name, client_time),
   INDEX idx_tracking_player_time (player_id, client_time),
   INDEX idx_tracking_server_time (server_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS daily_stats (
+  stat_date DATE NOT NULL PRIMARY KEY,
+  login_count INT UNSIGNED NOT NULL DEFAULT 0,
+  new_users INT UNSIGNED NOT NULL DEFAULT 0,
+  peak_online INT UNSIGNED NOT NULL DEFAULT 0,
+  avg_online INT UNSIGNED NOT NULL DEFAULT 0,
+  paying_users INT UNSIGNED NOT NULL DEFAULT 0,
+  retention_d1 INT UNSIGNED NOT NULL DEFAULT 0,
+  retention_d1_rate DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  retention_d3 INT UNSIGNED NOT NULL DEFAULT 0,
+  retention_d3_rate DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  retention_d7 INT UNSIGNED NOT NULL DEFAULT 0,
+  retention_d7_rate DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  retention_d15 INT UNSIGNED NOT NULL DEFAULT 0,
+  retention_d15_rate DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS payment_records (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  player_id VARCHAR(191) NOT NULL,
+  amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+  currency VARCHAR(32) NOT NULL DEFAULT 'CNY',
+  product_id VARCHAR(191) NULL,
+  paid_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX idx_payment_player (player_id),
+  INDEX idx_payment_date (paid_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS player_first_seen (
+  player_id VARCHAR(191) NOT NULL PRIMARY KEY,
+  first_seen_date DATE NOT NULL,
+  first_seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX idx_first_seen_date (first_seen_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS player_daily_logins (
+  player_id VARCHAR(191) NOT NULL,
+  login_date DATE NOT NULL,
+  login_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (player_id, login_date),
+  INDEX idx_login_date (login_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS online_stats (
+  stat_date DATE NOT NULL PRIMARY KEY,
+  realtime_online INT UNSIGNED NOT NULL DEFAULT 0,
+  avg_online INT UNSIGNED NOT NULL DEFAULT 0,
+  total_online INT UNSIGNED NOT NULL DEFAULT 0,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

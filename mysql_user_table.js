@@ -14,11 +14,12 @@ class MysqlUserTable {
     if (!gameName || typeof gameName !== 'string') throw new Error('gameName is required');
     const normalizedPlayerId = playerId && typeof playerId === 'string' ? playerId : account;
     const token = generateToken();
+    const now = new Date();
     try {
       await this.pool.execute(
-        `INSERT INTO game_users (account, player_id, game_name, token)
-         VALUES (?, ?, ?, ?)`,
-        [account, normalizedPlayerId, gameName, token]
+        `INSERT INTO game_users (account, player_id, game_name, token, registration_time, last_login_time)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [account, normalizedPlayerId, gameName, token, now, now]
       );
     } catch (error) {
       if (error && error.code === 'ER_DUP_ENTRY') throw new Error('account already exists');
@@ -34,7 +35,7 @@ class MysqlUserTable {
 
   async getUser(account, includeToken = false) {
     const [rows] = await this.pool.execute(
-      `SELECT account, player_id, game_name, token, created_at, updated_at
+      `SELECT account, player_id, game_name, token, registration_time, last_login_time, created_at, updated_at
        FROM game_users WHERE account = ? LIMIT 1`,
       [account]
     );
@@ -43,7 +44,7 @@ class MysqlUserTable {
 
   async listUsers() {
     const [rows] = await this.pool.query(
-      `SELECT account, player_id, game_name, created_at, updated_at
+      `SELECT account, player_id, game_name, registration_time, last_login_time, created_at, updated_at
        FROM game_users ORDER BY created_at DESC`
     );
     return rows.map((row) => this.safeUser(row));
@@ -61,9 +62,12 @@ class MysqlUserTable {
 
   async login(account) {
     const token = generateToken();
+    const now = new Date();
     const [result] = await this.pool.execute(
-      'UPDATE game_users SET token = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE account = ?',
-      [token, account]
+      `UPDATE game_users
+       SET token = ?, last_login_time = ?, updated_at = CURRENT_TIMESTAMP(3)
+       WHERE account = ?`,
+      [token, now, account]
     );
     if (!result.affectedRows) throw new Error('user not found');
     return this.getUser(account, true);
@@ -94,6 +98,8 @@ class MysqlUserTable {
       account: row.account,
       gameName: row.game_name,
       playerId: row.player_id,
+      registrationTime: row.registration_time,
+      lastLoginTime: row.last_login_time,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

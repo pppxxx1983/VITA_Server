@@ -6,7 +6,7 @@ class MysqlProfileRepository {
   async get(playerId) {
     const [rows] = await this.pool.execute(
       `SELECT player_id, name, avatar_id, avatar_frame_id, perfect_combo_streak,
-              extra_data, created_at, updated_at
+              extra_data, registration_time, last_login_time, created_at, updated_at
        FROM player_profiles WHERE player_id = ? LIMIT 1`,
       [playerId]
     );
@@ -22,6 +22,8 @@ class MysqlProfileRepository {
       avatarFrameId: row.avatar_frame_id,
       frameIndex: row.avatar_frame_id,
       perfectComboStreak: row.perfect_combo_streak,
+      registrationTime: row.registration_time,
+      lastLoginTime: row.last_login_time,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     });
@@ -29,17 +31,22 @@ class MysqlProfileRepository {
 
   async upsert(playerId, data) {
     const extra = Object.assign({}, data);
-    for (const key of ['playerId', 'name', 'nickname', 'avatarId', 'avatarIndex', 'avatarFrameId', 'frameIndex', 'perfectComboStreak', 'createdAt', 'updatedAt', 'exists']) {
+    for (const key of ['playerId', 'name', 'nickname', 'avatarId', 'avatarIndex', 'avatarFrameId', 'frameIndex', 'perfectComboStreak', 'registrationTime', 'lastLoginTime', 'createdAt', 'updatedAt', 'exists']) {
       delete extra[key];
     }
+    const registrationTime = data.registrationTime ? new Date(data.registrationTime) : null;
+    const lastLoginTime = data.lastLoginTime ? new Date(data.lastLoginTime) : null;
     await this.pool.execute(
       `INSERT INTO player_profiles
-         (player_id, name, avatar_id, avatar_frame_id, perfect_combo_streak, extra_data)
-       VALUES (?, ?, ?, ?, ?, ?)
+         (player_id, name, avatar_id, avatar_frame_id, perfect_combo_streak,
+          registration_time, last_login_time, extra_data)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          name = VALUES(name), avatar_id = VALUES(avatar_id),
          avatar_frame_id = VALUES(avatar_frame_id),
          perfect_combo_streak = VALUES(perfect_combo_streak),
+         registration_time = IFNULL(registration_time, VALUES(registration_time)),
+         last_login_time = VALUES(last_login_time),
          extra_data = VALUES(extra_data), updated_at = CURRENT_TIMESTAMP(3)`,
       [
         playerId,
@@ -47,10 +54,21 @@ class MysqlProfileRepository {
         Number(data.avatarId ?? data.avatarIndex ?? 0),
         Number(data.avatarFrameId ?? data.frameIndex ?? 0),
         Number(data.perfectComboStreak || 0),
+        registrationTime,
+        lastLoginTime,
         JSON.stringify(extra),
       ]
     );
     return this.get(playerId);
+  }
+
+  async updateLastLoginTime(playerId) {
+    await this.pool.execute(
+      `UPDATE player_profiles
+       SET last_login_time = CURRENT_TIMESTAMP(3)
+       WHERE player_id = ?`,
+      [playerId]
+    );
   }
 
   async updatePerfectComboStreak(playerId, perfectCombo) {

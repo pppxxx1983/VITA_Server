@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check simple_db.js && node --check route_registry.js && node --check level_rank_service.js && node --check mysql_database.js && node --check mysql_user_table.js && node --check mysql_profile_repository.js && node --check mysql_rank_repository.js && node --check mysql_achievement_repository.js && node --check tracking_repository.js && node --check scripts/migrate_json_to_mysql.js",
+    "check": "node --check server.js && node --check simple_db.js && node --check route_registry.js && node --check level_rank_service.js && node --check mysql_database.js && node --check mysql_user_table.js && node --check mysql_profile_repository.js && node --check mysql_rank_repository.js && node --check mysql_achievement_repository.js && node --check tracking_repository.js && node --check scripts/migrate_json_to_mysql.js && node --check scripts/migrate_add_time_fields.js",
     "migrate:mysql": "node scripts/migrate_json_to_mysql.js"
   },
   "dependencies": {
