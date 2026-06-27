@@ -81,6 +81,41 @@ class MysqlProfileRepository {
       [playerId, perfectCombo ? 1 : 0, perfectCombo ? 1 : 0]
     );
   }
+
+  async updatePerfectClearStreak(playerId, perfectClear) {
+    const initialStreak = perfectClear ? 1 : 0;
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.execute(
+        `INSERT INTO player_profiles (player_id, extra_data)
+         VALUES (?, JSON_OBJECT('perfectClearStreak', ?))
+         ON DUPLICATE KEY UPDATE
+           extra_data = JSON_SET(
+             COALESCE(extra_data, JSON_OBJECT()),
+             '$.perfectClearStreak',
+             IF(?,
+               COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.perfectClearStreak')) AS UNSIGNED), 0) + 1,
+               0
+             )
+           ),
+           updated_at = CURRENT_TIMESTAMP(3)`,
+        [playerId, initialStreak, perfectClear ? 1 : 0]
+      );
+      const [rows] = await connection.execute(
+        `SELECT JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.perfectClearStreak')) AS perfect_clear_streak
+         FROM player_profiles WHERE player_id = ? FOR UPDATE`,
+        [playerId]
+      );
+      await connection.commit();
+      return Number(rows[0] && rows[0].perfect_clear_streak) || 0;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
 }
 
 module.exports = { MysqlProfileRepository };

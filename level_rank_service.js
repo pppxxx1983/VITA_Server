@@ -34,6 +34,7 @@ class LevelRankService {
   async submitResult(input) {
     this.log('submitResult input', this.summarizeInput(input));
     const result = this.normalizeResult(input);
+    await this.applyPerfectClearMultiplier(result);
     this.log('submitResult normalized', result);
     const saved = await this.saveScore(result.level, result);
     this.log('submitResult saved', saved);
@@ -83,22 +84,8 @@ class LevelRankService {
         isUp,
       });
 
-      // 记录 1-3 名成就
-      let achievement = null;
-      let recordResult = null;
-      if (this.dailyRankAchievementService && newRank !== null && newRank <= 3) {
-        recordResult = await this.dailyRankAchievementService.recordRank(result.playerId, date, newRank);
-        achievement = await this.dailyRankAchievementService.getAchievement(result.playerId, date);
-        this.log('rank achievement recorded', {
-          playerId: result.playerId,
-          date,
-          newRank,
-          isNewToday: recordResult.isNew,
-          totalCount1: achievement.totalCount1,
-          totalCount2: achievement.totalCount2,
-          totalCount3: achievement.totalCount3,
-        });
-      }
+      // 前三名成就和奖励在跨日登录结算时写入，过关只更新实时榜单。
+      const achievement = null;
 
       // 用最新的 achievement 覆盖 self 中的旧数据
       const selfWithAchievement = afterLeaderboard.self
@@ -121,8 +108,8 @@ class LevelRankService {
         promotedFrom,
         promotedTo,
         achievement,
-        achievementIsNew: recordResult && recordResult.isNew,
-        isNewToday: recordResult && recordResult.isNew,
+        achievementIsNew: false,
+        isNewToday: false,
         self: selfWithAchievement,
         top100: afterLeaderboard.top100,
         surrounding: this.getRankWindow(afterLeaderboard.top100, oldRank, newRank),
@@ -155,6 +142,9 @@ class LevelRankService {
       specialScore: result.specialScore,
       perfectCombo: result.perfectCombo,
       perfectClear: result.perfectClear,
+      originalSpecialScore: result.originalSpecialScore,
+      specialScoreMultiplier: result.specialScoreMultiplier,
+      perfectClearStreak: result.perfectClearStreak,
       beatPercent,
       totalPlayers,
       rank: specialRankInfo
@@ -174,6 +164,22 @@ class LevelRankService {
       achievement: specialRankInfo ? specialRankInfo.achievement : null,
       top3,
     };
+  }
+
+  async applyPerfectClearMultiplier(result) {
+    const originalSpecialScore = result.specialScore;
+    let streak = 0;
+    if (this.userInfoDataStore && typeof this.userInfoDataStore.updatePerfectClearStreak === 'function') {
+      streak = await this.userInfoDataStore.updatePerfectClearStreak(result.playerId, result.perfectClear);
+    } else if (result.perfectClear) {
+      streak = 1;
+    }
+
+    const multiplier = !result.perfectClear ? 1 : (streak >= 3 ? 2 : (streak === 2 ? 1.5 : 1));
+    result.originalSpecialScore = originalSpecialScore;
+    result.specialScoreMultiplier = multiplier;
+    result.perfectClearStreak = streak;
+    result.specialScore = Math.floor(originalSpecialScore * multiplier);
   }
 
   async saveScore(level, result) {

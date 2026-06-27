@@ -15,8 +15,11 @@ const { MysqlUserTable } = require('./mysql_user_table');
 const { MysqlProfileRepository } = require('./mysql_profile_repository');
 const { MysqlRankRepository } = require('./mysql_rank_repository');
 const { MysqlAchievementRepository } = require('./mysql_achievement_repository');
+const { MysqlDailyRankRewardRepository } = require('./mysql_daily_rank_reward_repository');
+const { DailyRankRewardService } = require('./daily_rank_reward_service');
 const { TrackingRepository } = require('./tracking_repository');
 const { DailyStatsRepository } = require('./daily_stats_repository');
+const { DifficultyRepository } = require('./difficulty_repository');
 
 function loadConfig() {
   const configPath = path.join(__dirname, 'server.config.json');
@@ -67,9 +70,12 @@ const userDb = new MysqlUserTable(mysqlPool);
 const rankRepository = new MysqlRankRepository(mysqlPool);
 const profileRepository = new MysqlProfileRepository(mysqlPool);
 const achievementRepository = new MysqlAchievementRepository(mysqlPool);
+const dailyRankRewardRepository = new MysqlDailyRankRewardRepository(mysqlPool);
 const trackingRepository = new TrackingRepository(mysqlPool);
 const dailyStatsRepository = new DailyStatsRepository(mysqlPool);
+const difficultyRepository = new DifficultyRepository(mysqlPool);
 const dailyRankAchievementService = new DailyRankAchievementService(achievementRepository);
+const dailyRankRewardService = new DailyRankRewardService(dailyRankRewardRepository);
 const levelRankService = new LevelRankService(rankRepository, {
   logger: console,
   userInfoDataStore: profileRepository,
@@ -122,6 +128,10 @@ apiRoutes.post('/api/tracking/events', async (ctx) => {
   ctx.json(200, { ok: true, ...result });
 });
 
+apiRoutes.get('/api/difficulty-config', async (ctx) => {
+  ctx.json(200, { ok: true, config: await difficultyRepository.getConfig() });
+});
+
 apiRoutes.post('/api/rank/settlement', async (ctx) => {
   const body = await ctx.body();
   console.log('[rank:settlement] POST /api/rank/settlement body', JSON.stringify({
@@ -169,6 +179,23 @@ apiRoutes.get('/api/rank/achievement/:playerId', async (ctx) => {
   }
   const achievement = await dailyRankAchievementService.getAchievement(playerId, date);
   ctx.json(200, { ok: true, playerId, date, achievement });
+});
+
+apiRoutes.get('/api/rank/rewards/pending/:playerId', async (ctx) => {
+  const today = levelRankService.toDateString(new Date());
+  await dailyRankRewardService.settleBefore(today);
+  const reward = await dailyRankRewardService.getPending(ctx.params.playerId);
+  ctx.json(200, { ok: true, reward });
+});
+
+apiRoutes.post('/api/rank/rewards/claim', async (ctx) => {
+  const body = await ctx.body();
+  const reward = await dailyRankRewardService.claim(
+    String(body.playerId || '').trim(),
+    Number(body.rewardId),
+    Number(body.multiplier)
+  );
+  ctx.json(200, { ok: true, reward });
 });
 
 function sendJson(res, statusCode, body) {
@@ -360,7 +387,8 @@ async function routeUser(req, res, parts) {
       avatarId: body.avatarId,
       avatarFrameId: body.avatarFrameId,
     });
-    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo });
+    const difficultyConfig = await difficultyRepository.getConfig();
+    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo, difficultyConfig });
     return true;
   }
 
@@ -382,7 +410,11 @@ async function routeUser(req, res, parts) {
       console.error('[login] failed to record daily stats:', error.message);
     }
     const userInfo = await getUserInfoForLogin(user);
-    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo });
+    const today = levelRankService.toDateString(new Date());
+    await dailyRankRewardService.settleBefore(today);
+    const rankReward = playerId ? await dailyRankRewardService.getPending(playerId) : null;
+    const difficultyConfig = await difficultyRepository.getConfig();
+    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo, rankReward, difficultyConfig });
     return true;
   }
 
@@ -493,8 +525,10 @@ const server = http.createServer(handleRequest);
 
 async function startServer() {
   await verifyMysql(mysqlPool);
+  await dailyRankRewardRepository.ensureTable();
   await trackingRepository.ensureTable();
   await dailyStatsRepository.ensureTable();
+  await difficultyRepository.ensureTable();
   server.listen(PORT, HOST, () => {
     console.log(`Global settings server listening on http://${HOST}:${PORT}`);
     console.log(`MySQL database: ${process.env.MYSQL_DATABASE || (config.mysql && config.mysql.database) || 'vita_game'}`);

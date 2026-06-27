@@ -72,6 +72,22 @@ CREATE TABLE IF NOT EXISTS daily_rank_achievements (
   CONSTRAINT chk_rank_position CHECK (rank_position BETWEEN 1 AND 3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS daily_rank_rewards (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  rank_date DATE NOT NULL,
+  player_id VARCHAR(191) NOT NULL,
+  rank_position TINYINT UNSIGNED NOT NULL,
+  refresh_count INT UNSIGNED NOT NULL,
+  hint_count INT UNSIGNED NOT NULL,
+  claimed_at DATETIME(3) NULL,
+  claim_multiplier TINYINT UNSIGNED NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uk_daily_rank_reward_player (rank_date, player_id),
+  UNIQUE KEY uk_daily_rank_reward_position (rank_date, rank_position),
+  INDEX idx_daily_rank_reward_pending (player_id, claimed_at, rank_date),
+  CONSTRAINT chk_daily_reward_rank CHECK (rank_position BETWEEN 1 AND 3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS tracking_events (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   event_id VARCHAR(96) NOT NULL UNIQUE,
@@ -139,4 +155,47 @@ CREATE TABLE IF NOT EXISTS online_stats (
   avg_online INT UNSIGNED NOT NULL DEFAULT 0,
   total_online INT UNSIGNED NOT NULL DEFAULT 0,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS game_difficulty_levels (
+  mode VARCHAR(32) NOT NULL DEFAULT 'normal',
+  level INT UNSIGNED NOT NULL,
+  range_id INT UNSIGNED NULL,
+  difficulty TINYINT UNSIGNED NOT NULL,
+  difficulty_label VARCHAR(16) NOT NULL DEFAULT 'normal',
+  curve_factor DECIMAL(7,4) NOT NULL DEFAULT 1.0000,
+  manual_override TINYINT(1) NOT NULL DEFAULT 0,
+  grid_w SMALLINT UNSIGNED NOT NULL,
+  grid_h SMALLINT UNSIGNED NOT NULL,
+  max_layers SMALLINT UNSIGNED NOT NULL,
+  min_tiles SMALLINT UNSIGNED NOT NULL,
+  max_tiles SMALLINT UNSIGNED NOT NULL,
+  chaos DECIMAL(5,4) NOT NULL,
+  min_available_pairs SMALLINT UNSIGNED NOT NULL,
+  hidden_ratio DECIMAL(5,4) NOT NULL,
+  special_pair_count SMALLINT UNSIGNED NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (mode, level)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS game_difficulty_ranges (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  mode VARCHAR(32) NOT NULL DEFAULT 'normal',
+  start_level INT UNSIGNED NOT NULL,
+  end_level INT UNSIGNED NOT NULL,
+  difficulty TINYINT UNSIGNED NOT NULL,
+  grid_w SMALLINT UNSIGNED NOT NULL,
+  grid_h SMALLINT UNSIGNED NOT NULL,
+  max_layers SMALLINT UNSIGNED NOT NULL,
+  min_tiles SMALLINT UNSIGNED NOT NULL,
+  max_tiles SMALLINT UNSIGNED NOT NULL,
+  chaos DECIMAL(5,4) NOT NULL,
+  min_available_pairs SMALLINT UNSIGNED NOT NULL,
+  hidden_ratio DECIMAL(5,4) NOT NULL,
+  special_pair_count SMALLINT UNSIGNED NOT NULL,
+  curve_type VARCHAR(16) NOT NULL DEFAULT 'wave',
+  curve_amplitude DECIMAL(6,4) NOT NULL DEFAULT 0.1000,
+  curve_cycles DECIMAL(6,2) NOT NULL DEFAULT 1.00,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_difficulty_range (mode, start_level, end_level)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
