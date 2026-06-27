@@ -20,6 +20,8 @@ const { DailyRankRewardService } = require('./daily_rank_reward_service');
 const { TrackingRepository } = require('./tracking_repository');
 const { DailyStatsRepository } = require('./daily_stats_repository');
 const { DifficultyRepository } = require('./difficulty_repository');
+const { MysqlDailyChallengeRepository } = require('./mysql_daily_challenge_repository');
+const { DailyChallengeService } = require('./daily_challenge_service');
 
 function loadConfig() {
   const configPath = path.join(__dirname, 'server.config.json');
@@ -74,6 +76,7 @@ const dailyRankRewardRepository = new MysqlDailyRankRewardRepository(mysqlPool);
 const trackingRepository = new TrackingRepository(mysqlPool);
 const dailyStatsRepository = new DailyStatsRepository(mysqlPool);
 const difficultyRepository = new DifficultyRepository(mysqlPool);
+const dailyChallengeRepository = new MysqlDailyChallengeRepository(mysqlPool);
 const dailyRankAchievementService = new DailyRankAchievementService(achievementRepository);
 const dailyRankRewardService = new DailyRankRewardService(dailyRankRewardRepository);
 const levelRankService = new LevelRankService(rankRepository, {
@@ -89,6 +92,7 @@ const travelDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'trav
   players: {},
 });
 const travelService = new TravelService(travelDataStore, { defaultFragmentLimit: 10, defaultTotalStages: 20 });
+const dailyChallengeService = new DailyChallengeService(dailyChallengeRepository);
 const apiRoutes = new RouteRegistry({
   parseBody,
   sendJson,
@@ -117,6 +121,7 @@ async function getUserInfoForLogin(user) {
 userInfoService.registerRoutes(apiRoutes);
 refreshTimeService.registerRoutes(apiRoutes);
 travelService.registerRoutes(apiRoutes);
+dailyChallengeService.registerRoutes(apiRoutes);
 
 apiRoutes.post('/api/tracking/events', async (ctx) => {
   const body = await ctx.body();
@@ -529,6 +534,7 @@ async function startServer() {
   await trackingRepository.ensureTable();
   await dailyStatsRepository.ensureTable();
   await difficultyRepository.ensureTable();
+  await dailyChallengeRepository.ensureTable();
   server.listen(PORT, HOST, () => {
     console.log(`Global settings server listening on http://${HOST}:${PORT}`);
     console.log(`MySQL database: ${process.env.MYSQL_DATABASE || (config.mysql && config.mysql.database) || 'vita_game'}`);
