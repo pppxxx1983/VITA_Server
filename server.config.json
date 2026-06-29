@@ -4,6 +4,13 @@
   "hotUpdateDir": "../VITA/build/hotupdate",
   "dbFile": "./db/global_db.json",
   "maxBodyBytes": 1048576,
+  "publicBaseUrl": "",
+  "googleOAuth": {
+    "clientId": "",
+    "clientSecret": "",
+    "redirectUri": "",
+    "sessionTtlMs": 300000
+  },
   "mysql": {
     "host": "127.0.0.1",
     "port": 3306,
@@ -13,5 +20,4 @@
     "connectionLimit": 10
   }
 }
-
 

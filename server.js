@@ -1,6 +1,8 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { URL } = require('url');
 const { SECTION_NAMES, SimpleDb } = require('./simple_db');
 const { JsonDataStore } = require('./json_data_store');
@@ -31,6 +33,13 @@ function loadConfig() {
     dbFile: './db/global_db.json',
     hotUpdateDir: '../VITA/build/hotupdate',
     maxBodyBytes: 1024 * 1024,
+    publicBaseUrl: '',
+    googleOAuth: {
+      clientId: '',
+      clientSecret: '',
+      redirectUri: '',
+      sessionTtlMs: 5 * 60 * 1000,
+    },
   };
 
   if (!fs.existsSync(configPath)) {
@@ -55,6 +64,14 @@ const DB_FILE = resolveDbFile(process.env.DB_FILE || config.dbFile);
 const HOT_UPDATE_DIR = path.resolve(__dirname, process.env.HOT_UPDATE_DIR || config.hotUpdateDir);
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || config.maxBodyBytes);
 const mysqlPool = createMysqlPool(config);
+const GOOGLE_OAUTH = Object.assign({}, config.googleOAuth || {}, {
+  clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || (config.googleOAuth && config.googleOAuth.clientId) || '',
+  clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || (config.googleOAuth && config.googleOAuth.clientSecret) || '',
+  redirectUri: process.env.GOOGLE_OAUTH_REDIRECT_URI || (config.googleOAuth && config.googleOAuth.redirectUri) || '',
+  sessionTtlMs: Number(process.env.GOOGLE_OAUTH_SESSION_TTL_MS || (config.googleOAuth && config.googleOAuth.sessionTtlMs) || 5 * 60 * 1000),
+});
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || config.publicBaseUrl || '').replace(/\/+$/, '');
+const googleLoginSessions = new Map();
 
 const HOT_UPDATE_MIME_TYPES = {
   '.json': 'application/json; charset=utf-8',
@@ -116,6 +133,237 @@ async function getUserInfoForLogin(user) {
     });
   }
   return userInfo;
+}
+
+function nowMs() {
+  return Date.now();
+}
+
+function randomId(bytes = 24) {
+  return crypto.randomBytes(bytes).toString('hex');
+}
+
+function getRequestBaseUrl(req) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const proto = req.headers['x-forwarded-proto'] || 'http';
+  const host = req.headers['x-forwarded-host'] || req.headers.host || `${HOST}:${PORT}`;
+  return `${proto}://${host}`;
+}
+
+function getGoogleRedirectUri(req) {
+  if (GOOGLE_OAUTH.redirectUri) return GOOGLE_OAUTH.redirectUri;
+  return `${getRequestBaseUrl(req)}/api/auth/google/callback`;
+}
+
+function cleanupGoogleLoginSessions() {
+  const now = nowMs();
+  for (const [sessionId, session] of googleLoginSessions.entries()) {
+    if (!session || session.expiresAt <= now) {
+      googleLoginSessions.delete(sessionId);
+    }
+  }
+}
+
+function createGoogleLoginSession(req) {
+  cleanupGoogleLoginSessions();
+  const sessionId = randomId(18);
+  const state = randomId(24);
+  const expiresAt = nowMs() + Math.max(60 * 1000, GOOGLE_OAUTH.sessionTtlMs || 5 * 60 * 1000);
+  const redirectUri = getGoogleRedirectUri(req);
+  const session = {
+    sessionId,
+    state,
+    redirectUri,
+    status: 'pending',
+    expiresAt,
+    createdAt: new Date().toISOString(),
+    user: null,
+    userInfo: null,
+    error: '',
+  };
+  googleLoginSessions.set(sessionId, session);
+  return session;
+}
+
+function findGoogleLoginSessionByState(state) {
+  cleanupGoogleLoginSessions();
+  for (const session of googleLoginSessions.values()) {
+    if (session.state === state) {
+      return session;
+    }
+  }
+  return null;
+}
+
+function buildGoogleAuthUrl(session) {
+  if (!GOOGLE_OAUTH.clientId) {
+    throw new Error('GOOGLE_OAUTH_CLIENT_ID is not configured');
+  }
+
+  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  url.searchParams.set('client_id', GOOGLE_OAUTH.clientId);
+  url.searchParams.set('redirect_uri', session.redirectUri);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('scope', 'openid email profile');
+  url.searchParams.set('state', session.state);
+  url.searchParams.set('access_type', 'offline');
+  url.searchParams.set('prompt', 'select_account');
+  return url.toString();
+}
+
+function ensureGoogleOAuthConfigured() {
+  if (!GOOGLE_OAUTH.clientId) {
+    throw new Error('GOOGLE_OAUTH_CLIENT_ID is not configured');
+  }
+  if (!GOOGLE_OAUTH.clientSecret) {
+    throw new Error('GOOGLE_OAUTH_CLIENT_SECRET is not configured');
+  }
+}
+
+function getGoogleSessionStatus(session) {
+  if (!session) return null;
+  const payload = {
+    sessionId: session.sessionId,
+    status: session.status,
+    expiresAt: session.expiresAt,
+    createdAt: session.createdAt,
+  };
+  if (session.status === 'success') {
+    payload.result = session.result;
+  } else if (session.status === 'error') {
+    payload.error = session.error || 'Google sign-in failed';
+  }
+  return payload;
+}
+
+async function buildLoginResult(user, userInfo, googleProfile) {
+  const playerId = getPlayerIdFromUser(user);
+  const today = levelRankService.toDateString(new Date());
+  await dailyRankRewardService.settleBefore(today);
+  const rankReward = playerId ? await dailyRankRewardService.getPending(playerId) : null;
+  const difficultyConfig = await difficultyRepository.getConfig();
+  return {
+    ok: true,
+    user,
+    userInfo,
+    roleInfo: userInfo,
+    rankReward,
+    difficultyConfig,
+    google: googleProfile ? {
+      id: googleProfile.googleId,
+      email: googleProfile.email || '',
+      name: googleProfile.name || '',
+    } : undefined,
+  };
+}
+
+function sendHtml(res, statusCode, html) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.end(html);
+}
+
+function escapeHtml(value) {
+  return String(value || '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[char]));
+}
+
+function postFormJson(url, form) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const payload = new URLSearchParams(form).toString();
+    const req = https.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      path: `${target.pathname}${target.search}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+      timeout: 10000,
+    }, (res) => {
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { raw += chunk; });
+      res.on('end', () => {
+        let parsed = {};
+        try {
+          parsed = raw ? JSON.parse(raw) : {};
+        } catch (error) {
+          reject(new Error('invalid Google token response'));
+          return;
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(parsed.error_description || parsed.error || `Google token HTTP ${res.statusCode}`));
+          return;
+        }
+        resolve(parsed);
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('Google token request timeout')));
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
+
+function decodeJwtPayload(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length < 2) return null;
+  const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64 + '='.repeat((4 - base64.length % 4) % 4);
+  return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+}
+
+async function loginWithGoogleProfile(profile) {
+  const googleId = String(profile.sub || '').trim();
+  if (!googleId) {
+    throw new Error('Google profile missing sub');
+  }
+
+  const account = `google:${googleId}`;
+  const gameName = String(profile.name || profile.email || 'Google Player').trim();
+  let user = await userDb.getUser(account);
+  if (!user) {
+    try {
+      user = await userDb.register(account, gameName, account);
+      await dailyStatsRepository.recordNewUser(account, new Date());
+    } catch (error) {
+      if (error.message !== 'account already exists') throw error;
+    }
+  }
+
+  user = await userDb.login(account);
+  const playerId = getPlayerIdFromUser(user);
+  if (playerId) {
+    try {
+      await profileRepository.updateLastLoginTime(playerId);
+    } catch (error) {
+      console.error('[google-login] failed to update profile lastLoginTime:', error.message);
+    }
+  }
+  try {
+    await dailyStatsRepository.recordLogin(new Date());
+  } catch (error) {
+    console.error('[google-login] failed to record daily stats:', error.message);
+  }
+
+  const userInfo = await userInfoService.patchUserInfo(playerId, {
+    name: gameName,
+    playerName: gameName,
+    email: profile.email,
+    googleId,
+  });
+  return { user, userInfo, googleId, email: profile.email, name: gameName };
 }
 
 userInfoService.registerRoutes(apiRoutes);
@@ -374,6 +622,106 @@ async function routeGlobal(req, res, parts) {
   return false;
 }
 
+async function routeGoogleAuth(req, res, parts) {
+  if (parts[0] !== 'api' || parts[1] !== 'auth' || parts[2] !== 'google') {
+    return false;
+  }
+
+  const action = parts[3];
+  const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
+
+  if (req.method === 'POST' && parts.length === 4 && action === 'session') {
+    const session = createGoogleLoginSession(req);
+    const authUrl = buildGoogleAuthUrl(session);
+    sendJson(res, 200, {
+      ok: true,
+      sessionId: session.sessionId,
+      authUrl,
+      expiresAt: session.expiresAt,
+    });
+    return true;
+  }
+
+  if (req.method === 'GET' && parts.length === 4 && action === 'start') {
+    const sessionId = String(url.searchParams.get('session') || '').trim();
+    const session = googleLoginSessions.get(sessionId) || createGoogleLoginSession(req);
+    const authUrl = buildGoogleAuthUrl(session);
+    res.writeHead(302, {
+      Location: authUrl,
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end();
+    return true;
+  }
+
+  if (req.method === 'GET' && parts.length === 4 && action === 'status') {
+    cleanupGoogleLoginSessions();
+    const sessionId = String(url.searchParams.get('session') || '').trim();
+    const session = googleLoginSessions.get(sessionId);
+    if (!session) {
+      sendError(res, 404, 'Google login session not found or expired');
+      return true;
+    }
+    sendJson(res, 200, { ok: true, ...getGoogleSessionStatus(session) });
+    return true;
+  }
+
+  if (req.method === 'GET' && parts.length === 4 && action === 'callback') {
+    const state = String(url.searchParams.get('state') || '').trim();
+    const code = String(url.searchParams.get('code') || '').trim();
+    const oauthError = String(url.searchParams.get('error') || '').trim();
+    const session = findGoogleLoginSessionByState(state);
+
+    if (!session) {
+      sendHtml(res, 400, '<!doctype html><meta charset="utf-8"><title>Google Login</title><h2>Login expired</h2><p>Please return to the game and try again.</p>');
+      return true;
+    }
+
+    try {
+      if (oauthError) {
+        throw new Error(oauthError);
+      }
+      if (!code) {
+        throw new Error('Google callback missing code');
+      }
+      ensureGoogleOAuthConfigured();
+
+      const token = await postFormJson('https://oauth2.googleapis.com/token', {
+        code,
+        client_id: GOOGLE_OAUTH.clientId,
+        client_secret: GOOGLE_OAUTH.clientSecret,
+        redirect_uri: session.redirectUri,
+        grant_type: 'authorization_code',
+      });
+      const profile = decodeJwtPayload(token.id_token);
+      if (!profile || profile.aud !== GOOGLE_OAUTH.clientId) {
+        throw new Error('invalid Google id token audience');
+      }
+      if (!profile.sub) {
+        throw new Error('Google profile missing sub');
+      }
+
+      const login = await loginWithGoogleProfile(profile);
+      session.status = 'success';
+      session.completedAt = new Date().toISOString();
+      session.user = login.user;
+      session.userInfo = login.userInfo;
+      session.result = await buildLoginResult(login.user, login.userInfo, login);
+      sendHtml(res, 200, '<!doctype html><meta charset="utf-8"><title>Google Login</title><h2>Google login succeeded</h2><p>You can return to the game.</p>');
+    } catch (error) {
+      session.status = 'error';
+      session.error = error.message || 'Google sign-in failed';
+      session.completedAt = new Date().toISOString();
+      console.error('[google-login] callback failed:', session.error);
+      sendHtml(res, 400, `<!doctype html><meta charset="utf-8"><title>Google Login</title><h2>Google login failed</h2><p>${escapeHtml(session.error)}</p><p>Please return to the game and try again.</p>`);
+    }
+    return true;
+  }
+
+  return false;
+}
+
 async function routeUser(req, res, parts) {
   if (parts[0] !== 'api' || parts[1] !== 'user') return false;
 
@@ -517,6 +865,7 @@ async function handleRequest(req, res) {
   try {
     if (routeHealth(req, res, parts)) return;
     if (routeHotUpdate(req, res, parts)) return;
+    if (await routeGoogleAuth(req, res, parts)) return;
     if (await routeUser(req, res, parts)) return;
     if (await apiRoutes.handle(req, res, parts)) return;
     if (await routeGlobal(req, res, parts)) return;
