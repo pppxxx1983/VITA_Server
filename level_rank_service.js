@@ -129,6 +129,7 @@ class LevelRankService {
           name: item.name,
           avatarId: item.avatarId,
           avatarFrameId: item.avatarFrameId,
+          avatarUrl: item.avatarUrl || '',
           specialScore: item.specialScore,
         }))
       : [];
@@ -293,6 +294,11 @@ class LevelRankService {
         level: item.level,
         avatarId: typeof userInfo.avatarId === 'number' ? userInfo.avatarId : (typeof userInfo.avatarIndex === 'number' ? userInfo.avatarIndex : 0),
         avatarFrameId: typeof userInfo.avatarFrameId === 'number' ? userInfo.avatarFrameId : (typeof userInfo.frameIndex === 'number' ? userInfo.frameIndex : 0),
+        avatarUrl: normalizeText(userInfo.avatarUrl)
+          || normalizeText(item.avatarUrl)
+          || normalizeText(userInfo.avatar_source_url)
+          || normalizeText(userInfo.avatarSourceUrl)
+          || '',
       });
     }
 
@@ -372,6 +378,24 @@ class LevelRankService {
       : toFiniteNumber(input.timeSeconds, 'timeSeconds') * 1000;
     const timeMs = Math.max(0, Math.floor(rawTimeMs));
 
+    let avatarUrl;
+    if (input.avatarUrl !== undefined || input.picture !== undefined || input.photoUrl !== undefined) {
+      avatarUrl = normalizeText(input.avatarUrl)
+        || normalizeText(input.picture)
+        || normalizeText(input.photoUrl)
+        || '';
+    }
+    const avatarId = typeof input.avatarId === 'number' && !Number.isNaN(input.avatarId)
+      ? Math.max(0, Math.floor(input.avatarId))
+      : (typeof input.avatarIndex === 'number' && !Number.isNaN(input.avatarIndex)
+        ? Math.max(0, Math.floor(input.avatarIndex))
+        : undefined);
+    const avatarFrameId = typeof input.avatarFrameId === 'number' && !Number.isNaN(input.avatarFrameId)
+      ? Math.max(0, Math.floor(input.avatarFrameId))
+      : (typeof input.frameIndex === 'number' && !Number.isNaN(input.frameIndex)
+        ? Math.max(0, Math.floor(input.frameIndex))
+        : undefined);
+
     return {
       playerId,
       level,
@@ -385,6 +409,9 @@ class LevelRankService {
         || normalizeText(input.nickname)
         || normalizeText(input.playerName)
         || normalizeText(input.displayName),
+      avatarUrl,
+      avatarId,
+      avatarFrameId,
     };
   }
 

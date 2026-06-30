@@ -32,6 +32,13 @@ function normalizeText(value) {
   return text ? text : undefined;
 }
 
+function copyTextField(output, data, key) {
+  const value = normalizeText(data[key]);
+  if (value !== undefined) {
+    output[key] = value;
+  }
+}
+
 class UserInfoService {
   constructor(dataStore, options = {}) {
     this.dataStore = dataStore;
@@ -131,6 +138,24 @@ class UserInfoService {
     }
     if (data.lastLoginTime !== undefined) {
       output.lastLoginTime = data.lastLoginTime;
+    }
+
+    [
+      'email',
+      'googleId',
+      'rawGoogleId',
+      'account',
+      'loginType',
+      'displayId',
+      'avatarFile',
+    ].forEach((key) => copyTextField(output, data, key));
+
+    // avatarUrl/avatarSourceUrl can be explicitly cleared with an empty string
+    if (data.avatarUrl !== undefined) {
+      output.avatarUrl = normalizeText(data.avatarUrl) || '';
+    }
+    if (data.avatarSourceUrl !== undefined) {
+      output.avatarSourceUrl = normalizeText(data.avatarSourceUrl) || '';
     }
 
     if (!partial) {

@@ -62,6 +62,8 @@ const HOST = process.env.HOST || config.host;
 const PORT = Number(process.env.PORT || config.port);
 const DB_FILE = resolveDbFile(process.env.DB_FILE || config.dbFile);
 const HOT_UPDATE_DIR = path.resolve(__dirname, process.env.HOT_UPDATE_DIR || config.hotUpdateDir);
+const PUBLIC_DIR = path.resolve(__dirname, process.env.PUBLIC_DIR || config.publicDir || './public');
+const AVATAR_DIR = path.join(PUBLIC_DIR, 'avatars');
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || config.maxBodyBytes);
 const mysqlPool = createMysqlPool(config);
 const GOOGLE_OAUTH = Object.assign({}, config.googleOAuth || {}, {
@@ -82,6 +84,14 @@ const HOT_UPDATE_MIME_TYPES = {
   '.mp3': 'audio/mpeg',
   '.ogg': 'audio/ogg',
   '.ttf': 'font/ttf',
+};
+
+const PUBLIC_MIME_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
 };
 
 const db = new SimpleDb(DB_FILE);
@@ -141,6 +151,128 @@ function nowMs() {
 
 function randomId(bytes = 24) {
   return crypto.randomBytes(bytes).toString('hex');
+}
+
+function normalizeGoogleProfile(profile) {
+  const raw = profile && typeof profile === 'object' ? profile : {};
+  const googleId = String(raw.sub || raw.id || raw.googleId || '').trim();
+  const email = String(raw.email || raw.account || '').trim();
+  const accountKey = googleId || email;
+  if (!accountKey) {
+    throw new Error('Google profile missing unique id');
+  }
+  return {
+    googleId: accountKey,
+    rawGoogleId: googleId,
+    email,
+    name: String(raw.name || raw.displayName || raw.nickname || email || 'Google Player').trim(),
+    picture: String(raw.picture || raw.photoUrl || raw.avatarUrl || raw.avatar || '').trim(),
+  };
+}
+
+async function generateUniqueDisplayId() {
+  for (let i = 0; i < 20; i++) {
+    const displayId = String(Math.floor(10000000 + Math.random() * 90000000));
+    const [rows] = await mysqlPool.execute(
+      `SELECT player_id FROM player_profiles
+       WHERE JSON_UNQUOTE(JSON_EXTRACT(extra_data, '$.displayId')) = ?
+       LIMIT 1`,
+      [displayId]
+    );
+    if (!rows.length) return displayId;
+  }
+  return String(Date.now()).slice(-8).padStart(8, '0');
+}
+
+function getAvatarPublicUrl(req, fileName) {
+  const baseUrl = req ? getRequestBaseUrl(req) : (PUBLIC_BASE_URL || `http://${HOST}:${PORT}`);
+  return `${baseUrl.replace(/\/+$/, '')}/avatars/${encodeURIComponent(fileName)}`;
+}
+
+function sanitizeAvatarExtension(contentType, urlPath) {
+  const lowerType = String(contentType || '').toLowerCase();
+  if (lowerType.includes('png')) return '.png';
+  if (lowerType.includes('webp')) return '.webp';
+  if (lowerType.includes('gif')) return '.gif';
+  if (lowerType.includes('jpeg') || lowerType.includes('jpg')) return '.jpg';
+  const ext = path.extname(urlPath || '').toLowerCase();
+  return PUBLIC_MIME_TYPES[ext] ? ext : '.jpg';
+}
+
+function downloadBuffer(url, maxBytes = 2 * 1024 * 1024, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    if (!url || redirectCount > 3) {
+      reject(new Error('invalid avatar url'));
+      return;
+    }
+
+    let target;
+    try {
+      target = new URL(url);
+    } catch (error) {
+      reject(new Error('invalid avatar url'));
+      return;
+    }
+
+    if (target.protocol !== 'https:' && target.protocol !== 'http:') {
+      reject(new Error('unsupported avatar url protocol'));
+      return;
+    }
+
+    const client = target.protocol === 'https:' ? https : http;
+    const req = client.get(target, { timeout: 10000 }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        const nextUrl = new URL(res.headers.location, target).toString();
+        downloadBuffer(nextUrl, maxBytes, redirectCount + 1).then(resolve).catch(reject);
+        return;
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        reject(new Error(`avatar download HTTP ${res.statusCode}`));
+        return;
+      }
+
+      const chunks = [];
+      let size = 0;
+      res.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > maxBytes) {
+          req.destroy(new Error('avatar image too large'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on('end', () => resolve({
+        buffer: Buffer.concat(chunks),
+        contentType: res.headers['content-type'] || '',
+        urlPath: target.pathname,
+      }));
+    });
+    req.on('timeout', () => req.destroy(new Error('avatar download timeout')));
+    req.on('error', reject);
+  });
+}
+
+async function saveGoogleAvatar(profile, req) {
+  if (!profile.picture) return {};
+  try {
+    const downloaded = await downloadBuffer(profile.picture);
+    const ext = sanitizeAvatarExtension(downloaded.contentType, downloaded.urlPath);
+    const fileName = `${crypto.createHash('sha1').update(profile.googleId).digest('hex')}${ext}`;
+    fs.mkdirSync(AVATAR_DIR, { recursive: true });
+    fs.writeFileSync(path.join(AVATAR_DIR, fileName), downloaded.buffer);
+    return {
+      avatarUrl: getAvatarPublicUrl(req, fileName),
+      avatarFile: path.join('avatars', fileName).replace(/\\/g, '/'),
+      avatarSourceUrl: profile.picture,
+    };
+  } catch (error) {
+    console.error('[google-login] failed to download avatar:', error.message);
+    return {
+      avatarSourceUrl: profile.picture,
+    };
+  }
 }
 
 function getRequestBaseUrl(req) {
@@ -253,6 +385,8 @@ async function buildLoginResult(user, userInfo, googleProfile) {
       id: googleProfile.googleId,
       email: googleProfile.email || '',
       name: googleProfile.name || '',
+      avatarUrl: googleProfile.avatarUrl || '',
+      displayId: userInfo && userInfo.displayId ? userInfo.displayId : '',
     } : undefined,
   };
 }
@@ -324,14 +458,11 @@ function decodeJwtPayload(token) {
   return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
 }
 
-async function loginWithGoogleProfile(profile) {
-  const googleId = String(profile.sub || '').trim();
-  if (!googleId) {
-    throw new Error('Google profile missing sub');
-  }
-
+async function loginWithGoogleProfile(profile, req) {
+  const googleProfile = normalizeGoogleProfile(profile);
+  const googleId = googleProfile.googleId;
   const account = `google:${googleId}`;
-  const gameName = String(profile.name || profile.email || 'Google Player').trim();
+  const gameName = googleProfile.name;
   let user = await userDb.getUser(account);
   if (!user) {
     try {
@@ -339,6 +470,12 @@ async function loginWithGoogleProfile(profile) {
       await dailyStatsRepository.recordNewUser(account, new Date());
     } catch (error) {
       if (error.message !== 'account already exists') throw error;
+    }
+  } else if (user.gameName !== gameName) {
+    try {
+      await userDb.updateGameName(account, gameName);
+    } catch (error) {
+      console.error('[google-login] failed to update game name:', error.message);
     }
   }
 
@@ -352,18 +489,26 @@ async function loginWithGoogleProfile(profile) {
     }
   }
   try {
-    await dailyStatsRepository.recordLogin(new Date());
+    await dailyStatsRepository.recordLogin(playerId, new Date());
   } catch (error) {
     console.error('[google-login] failed to record daily stats:', error.message);
   }
 
+  const currentInfo = playerId ? await userInfoService.getUserInfo(playerId) : null;
+  const displayId = currentInfo && currentInfo.displayId ? currentInfo.displayId : await generateUniqueDisplayId();
+  const avatarInfo = await saveGoogleAvatar(googleProfile, req);
   const userInfo = await userInfoService.patchUserInfo(playerId, {
     name: gameName,
     playerName: gameName,
-    email: profile.email,
+    email: googleProfile.email,
     googleId,
+    rawGoogleId: googleProfile.rawGoogleId,
+    account,
+    loginType: 'google',
+    displayId,
+    ...avatarInfo,
   });
-  return { user, userInfo, googleId, email: profile.email, name: gameName };
+  return { user, userInfo, googleId, email: googleProfile.email, name: gameName, avatarUrl: avatarInfo.avatarUrl || '' };
 }
 
 userInfoService.registerRoutes(apiRoutes);
@@ -567,6 +712,32 @@ function routeHotUpdate(req, res, parts) {
   return true;
 }
 
+function routePublicAvatar(req, res, parts) {
+  if (req.method !== 'GET' || parts[0] !== 'avatars' || parts.length !== 2) {
+    return false;
+  }
+
+  const fileName = parts[1];
+  const filePath = path.resolve(AVATAR_DIR, fileName);
+  const rootWithSeparator = AVATAR_DIR.endsWith(path.sep) ? AVATAR_DIR : AVATAR_DIR + path.sep;
+  if (filePath !== AVATAR_DIR && !filePath.startsWith(rootWithSeparator)) {
+    sendError(res, 403, 'invalid avatar path');
+    return true;
+  }
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    sendError(res, 404, 'avatar not found');
+    return true;
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  res.writeHead(200, {
+    'Content-Type': PUBLIC_MIME_TYPES[ext] || 'application/octet-stream',
+    'Cache-Control': 'public, max-age=31536000, immutable',
+    'Access-Control-Allow-Origin': '*',
+  });
+  fs.createReadStream(filePath).pipe(res);
+  return true;
+}
+
 async function routeGlobal(req, res, parts) {
   if (parts[0] !== 'api' || parts[1] !== 'global' || !parts[2]) {
     return false;
@@ -667,6 +838,14 @@ async function routeGoogleAuth(req, res, parts) {
     return true;
   }
 
+  if (req.method === 'POST' && parts.length === 4 && action === 'native') {
+    const body = await parseBody(req);
+    const login = await loginWithGoogleProfile(body || {}, req);
+    const result = await buildLoginResult(login.user, login.userInfo, login);
+    sendJson(res, 200, result);
+    return true;
+  }
+
   if (req.method === 'GET' && parts.length === 4 && action === 'callback') {
     const state = String(url.searchParams.get('state') || '').trim();
     const code = String(url.searchParams.get('code') || '').trim();
@@ -702,7 +881,7 @@ async function routeGoogleAuth(req, res, parts) {
         throw new Error('Google profile missing sub');
       }
 
-      const login = await loginWithGoogleProfile(profile);
+      const login = await loginWithGoogleProfile(profile, req);
       session.status = 'success';
       session.completedAt = new Date().toISOString();
       session.user = login.user;
@@ -730,7 +909,7 @@ async function routeUser(req, res, parts) {
     const body = await parseBody(req);
     const user = await userDb.register(body.account, body.gameName, body.playerId);
     try {
-      await dailyStatsRepository.recordNewUser(new Date());
+      await dailyStatsRepository.recordNewUser(getPlayerIdFromUser(user), new Date());
     } catch (error) {
       console.error('[register] failed to record daily stats:', error.message);
     }
@@ -758,7 +937,7 @@ async function routeUser(req, res, parts) {
       }
     }
     try {
-      await dailyStatsRepository.recordLogin(new Date());
+      await dailyStatsRepository.recordLogin(playerId, new Date());
     } catch (error) {
       console.error('[login] failed to record daily stats:', error.message);
     }
@@ -865,6 +1044,7 @@ async function handleRequest(req, res) {
   try {
     if (routeHealth(req, res, parts)) return;
     if (routeHotUpdate(req, res, parts)) return;
+    if (routePublicAvatar(req, res, parts)) return;
     if (await routeGoogleAuth(req, res, parts)) return;
     if (await routeUser(req, res, parts)) return;
     if (await apiRoutes.handle(req, res, parts)) return;

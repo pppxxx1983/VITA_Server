@@ -41,24 +41,40 @@ class MysqlRankRepository {
 
   async saveDailySpecial(date, result) {
     const externalId = `${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
+    const hasAvatarUrl = result.avatarUrl !== undefined;
+    const columns = ['rank_date', 'player_id', 'level', 'score', 'combo', 'special_score', 'time_ms', 'display_name'];
+    const values = [date, result.playerId, result.level, result.score, result.combo,
+      result.specialScore, result.timeMs, result.name || null];
+    if (hasAvatarUrl) {
+      columns.push('avatar_url');
+      values.push(result.avatarUrl || null);
+    }
+    columns.push('external_id');
+    values.push(externalId);
+
+    const placeholders = values.map(() => '?').join(', ');
+    const avatarUrlUpdate = hasAvatarUrl
+      ? 'avatar_url = VALUES(avatar_url),'
+      : '';
+
     await this.pool.execute(
       `INSERT INTO daily_special_scores
-         (rank_date, player_id, level, score, combo, special_score, time_ms, display_name, external_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (${columns.join(', ')})
+       VALUES (${placeholders})
        ON DUPLICATE KEY UPDATE
          special_score = special_score + VALUES(special_score),
          level = VALUES(level), score = VALUES(score), combo = VALUES(combo),
          time_ms = VALUES(time_ms), display_name = COALESCE(VALUES(display_name), display_name),
+         ${avatarUrlUpdate}
          external_id = VALUES(external_id), updated_at = CURRENT_TIMESTAMP(3)`,
-      [date, result.playerId, result.level, result.score, result.combo,
-        result.specialScore, result.timeMs, result.name || null, externalId]
+      values
     );
   }
 
   async listDailySpecial(date) {
     const [rows] = await this.pool.execute(
       `SELECT d.player_id, d.level, d.score, d.combo, d.special_score, d.time_ms,
-              d.display_name, d.external_id, d.updated_at,
+              d.display_name, d.avatar_url, d.external_id, d.updated_at,
               p.name AS profile_name, p.avatar_id, p.avatar_frame_id
        FROM daily_special_scores d
        LEFT JOIN player_profiles p ON p.player_id = d.player_id
@@ -76,6 +92,7 @@ class MysqlRankRepository {
       name: row.profile_name || row.display_name || '',
       avatarId: row.avatar_id || 0,
       avatarFrameId: row.avatar_frame_id || 0,
+      avatarUrl: row.avatar_url || '',
       id: row.external_id,
       updatedAt: row.updated_at,
       date,
