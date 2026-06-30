@@ -64,6 +64,8 @@ function normalizeProgress(progress) {
     dailyClearData: normalizeDailyClearData(source.dailyClearData),
     travelLevelIndex: Math.max(1, normalizePositiveInt(source.travelLevelIndex, 1)),
     travelCollectedMedalIndexes: normalizeIndexArray(source.travelCollectedMedalIndexes),
+    refreshCount: Math.max(0, normalizePositiveInt(source.refreshCount, 0)),
+    hintCount: Math.max(0, normalizePositiveInt(source.hintCount, 0)),
     updatedAt: typeof source.updatedAt === 'string' && source.updatedAt.trim() ? source.updatedAt.trim() : '',
   };
 }
@@ -79,6 +81,8 @@ function mergeProgress(current, patch) {
       ...base.travelCollectedMedalIndexes,
       ...next.travelCollectedMedalIndexes,
     ])).sort((a, b) => a - b),
+    refreshCount: Math.max(base.refreshCount, next.refreshCount),
+    hintCount: Math.max(base.hintCount, next.hintCount),
     updatedAt: nowIso(),
   };
 }
