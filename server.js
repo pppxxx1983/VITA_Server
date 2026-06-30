@@ -606,9 +606,10 @@ async function loginWithGoogleProfile(profile, req) {
   const currentInfo = playerId ? await userInfoService.getUserInfo(playerId) : null;
   const displayId = currentInfo && currentInfo.displayId ? currentInfo.displayId : await generateUniqueDisplayId();
   const avatarInfo = await saveGoogleAvatar(googleProfile, req);
+  const selectedAvatarId = currentInfo && Number(currentInfo.avatarId || currentInfo.avatarIndex || 0) > 0
+    ? Number(currentInfo.avatarId || currentInfo.avatarIndex || 0)
+    : 0;
   const userInfo = await userInfoService.patchUserInfo(playerId, {
-    name: gameName,
-    playerName: gameName,
     email: googleProfile.email,
     googleId,
     rawGoogleId: googleProfile.rawGoogleId,
@@ -616,8 +617,9 @@ async function loginWithGoogleProfile(profile, req) {
     loginType: 'google',
     displayId,
     ...avatarInfo,
+    avatarUrl: selectedAvatarId > 0 ? '' : (avatarInfo.avatarUrl || ''),
   });
-  return { user, userInfo, googleId, email: googleProfile.email, name: gameName, avatarUrl: avatarInfo.avatarUrl || '' };
+  return { user, userInfo, googleId, email: googleProfile.email, name: userInfo.name || '', avatarUrl: avatarInfo.avatarUrl || '' };
 }
 
 userInfoService.registerRoutes(apiRoutes);

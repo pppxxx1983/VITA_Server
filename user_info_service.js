@@ -1,3 +1,5 @@
+const { getDefaultPlayerName } = require('./default_name_table');
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -126,6 +128,8 @@ class UserInfoService {
     if (name !== undefined) {
       output.name = name;
       output.nickname = name;
+      const nameSource = normalizeText(data.nameSource);
+      output.nameSource = nameSource || (partial ? 'user' : (output.nameSource || 'default'));
     }
 
     const ageSegment = normalizeId(data.ageSegment, 'ageSegment');
@@ -175,6 +179,9 @@ class UserInfoService {
     const now = nowIso();
     return {
       playerId,
+      name: getDefaultPlayerName(playerId),
+      nickname: getDefaultPlayerName(playerId),
+      nameSource: 'default',
       avatarId: 0,
       avatarIndex: 0,
       avatarFrameId: 0,
