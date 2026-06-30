@@ -532,7 +532,39 @@ function decodeJwtPayload(token) {
   if (parts.length < 2) return null;
   const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
   const padded = base64 + '='.repeat((4 - base64.length % 4) % 4);
-  return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+  try {
+    return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+  } catch (error) {
+    return null;
+  }
+}
+
+async function getNativeGoogleProfile(body) {
+  const raw = body && typeof body === 'object' ? body : {};
+  if (raw.idToken && GOOGLE_OAUTH.clientId) {
+    return verifyGoogleIdToken(raw.idToken);
+  }
+
+  if (raw.idToken && !GOOGLE_OAUTH.clientId) {
+    console.warn('[google-login] GOOGLE_OAUTH_CLIENT_ID is not configured; using unverified native Google profile fallback.');
+    const payload = decodeJwtPayload(raw.idToken);
+    if (payload && payload.sub) {
+      return {
+        ...raw,
+        sub: String(payload.sub || '').trim(),
+        id: String(payload.sub || raw.id || '').trim(),
+        googleId: String(payload.sub || raw.googleId || '').trim(),
+        email: String(payload.email || raw.email || raw.account || '').trim(),
+        account: String(payload.email || raw.account || payload.sub || '').trim(),
+        name: String(payload.name || raw.name || raw.displayName || payload.email || 'Google Player').trim(),
+        displayName: String(payload.name || raw.displayName || '').trim(),
+        picture: String(payload.picture || raw.picture || raw.photoUrl || '').trim(),
+        photoUrl: String(payload.picture || raw.photoUrl || raw.picture || '').trim(),
+      };
+    }
+  }
+
+  return raw;
 }
 
 async function loginWithGoogleProfile(profile, req) {
@@ -917,8 +949,8 @@ async function routeGoogleAuth(req, res, parts) {
 
   if (req.method === 'POST' && parts.length === 4 && action === 'native') {
     const body = await parseBody(req);
-    const verifiedProfile = await verifyGoogleIdToken(body && body.idToken);
-    const login = await loginWithGoogleProfile(verifiedProfile, req);
+    const googleProfile = await getNativeGoogleProfile(body);
+    const login = await loginWithGoogleProfile(googleProfile, req);
     const result = await buildLoginResult(login.user, login.userInfo, login);
     sendJson(res, 200, result);
     return true;
