@@ -957,6 +957,34 @@ async function routeGoogleAuth(req, res, parts) {
     return true;
   }
 
+  if (req.method === 'POST' && parts.length === 4 && action === 'test') {
+    const body = await parseBody(req);
+    const testType = String(body.type || '').trim();
+    if (!testType) {
+      sendError(res, 400, 'test type is required');
+      return true;
+    }
+    const testAccounts = {
+      'mingyue': {
+        sub: '102614654036713113611',
+        googleId: '102614654036713113611',
+        email: 'yumingyue178@gmail.com',
+        name: 'Mingyue Yu',
+        displayName: 'Mingyue Yu',
+        picture: 'https://lh3.googleusercontent.com/a/ACg8ocKUinFMjQTR7DqcRkGIN92iTRgzUbTbI_nnQ3DLBttDrukdHzc=s96-c',
+      },
+    };
+    const testProfile = testAccounts[testType];
+    if (!testProfile) {
+      sendError(res, 404, 'unknown test account: ' + testType);
+      return true;
+    }
+    const login = await loginWithGoogleProfile(testProfile, req);
+    const result = await buildLoginResult(login.user, login.userInfo, login);
+    sendJson(res, 200, result);
+    return true;
+  }
+
   if (req.method === 'POST' && parts.length === 4 && action === 'native') {
     const body = await parseBody(req);
     const googleProfile = await getNativeGoogleProfile(body);
