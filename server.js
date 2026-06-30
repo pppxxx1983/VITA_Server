@@ -256,23 +256,10 @@ function downloadBuffer(url, maxBytes = 2 * 1024 * 1024, redirectCount = 0) {
 
 async function saveGoogleAvatar(profile, req) {
   if (!profile.picture) return {};
-  try {
-    const downloaded = await downloadBuffer(profile.picture);
-    const ext = sanitizeAvatarExtension(downloaded.contentType, downloaded.urlPath);
-    const fileName = `${crypto.createHash('sha1').update(profile.googleId).digest('hex')}${ext}`;
-    fs.mkdirSync(AVATAR_DIR, { recursive: true });
-    fs.writeFileSync(path.join(AVATAR_DIR, fileName), downloaded.buffer);
-    return {
-      avatarUrl: getAvatarPublicUrl(req, fileName),
-      avatarFile: path.join('avatars', fileName).replace(/\\/g, '/'),
-      avatarSourceUrl: profile.picture,
-    };
-  } catch (error) {
-    console.error('[google-login] failed to download avatar:', error.message);
-    return {
-      avatarSourceUrl: profile.picture,
-    };
-  }
+  return {
+    avatarUrl: profile.picture,
+    avatarSourceUrl: profile.picture,
+  };
 }
 
 function getRequestBaseUrl(req) {
