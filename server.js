@@ -436,6 +436,96 @@ function postFormJson(url, form) {
   });
 }
 
+function getJson(url, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const req = https.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      path: `${target.pathname}${target.search}`,
+      method: 'GET',
+      timeout: timeoutMs,
+    }, (res) => {
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { raw += chunk; });
+      res.on('end', () => {
+        let parsed = {};
+        try {
+          parsed = raw ? JSON.parse(raw) : {};
+        } catch (error) {
+          reject(new Error('invalid Google tokeninfo response'));
+          return;
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(parsed.error_description || parsed.error || `Google tokeninfo HTTP ${res.statusCode}`));
+          return;
+        }
+        resolve(parsed);
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('Google tokeninfo request timeout')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function verifyGoogleIdToken(idToken) {
+  if (!GOOGLE_OAUTH.clientId) {
+    throw new Error('GOOGLE_OAUTH_CLIENT_ID is not configured');
+  }
+  const token = String(idToken || '').trim();
+  console.log('[google-login] verify idToken start: hasToken=%s, tokenLength=%d, expectedAud=%s', !!token, token.length, GOOGLE_OAUTH.clientId);
+  if (!token) {
+    throw new Error('Google idToken is required');
+  }
+
+  const tokenInfoUrl = new URL('https://oauth2.googleapis.com/tokeninfo');
+  tokenInfoUrl.searchParams.set('id_token', token);
+  let payload;
+  try {
+    payload = await getJson(tokenInfoUrl.toString());
+  } catch (error) {
+    console.error('[google-login] verify idToken request failed: %s', error && error.message ? error.message : error);
+    throw error;
+  }
+
+  if (payload.aud !== GOOGLE_OAUTH.clientId) {
+    console.error('[google-login] verify idToken failed: invalid audience aud=%s expected=%s sub=%s email=%s', payload.aud, GOOGLE_OAUTH.clientId, payload.sub || '', payload.email || '');
+    throw new Error('invalid Google id token audience');
+  }
+  if (payload.iss !== 'https://accounts.google.com' && payload.iss !== 'accounts.google.com') {
+    console.error('[google-login] verify idToken failed: invalid issuer iss=%s sub=%s email=%s', payload.iss, payload.sub || '', payload.email || '');
+    throw new Error('invalid Google id token issuer');
+  }
+  if (!payload.sub) {
+    console.error('[google-login] verify idToken failed: missing sub email=%s aud=%s', payload.email || '', payload.aud || '');
+    throw new Error('Google id token missing sub');
+  }
+  const expiresAtSeconds = Number(payload.exp || 0);
+  if (!expiresAtSeconds || expiresAtSeconds <= Math.floor(Date.now() / 1000)) {
+    console.error('[google-login] verify idToken failed: expired exp=%s sub=%s email=%s', payload.exp || '', payload.sub || '', payload.email || '');
+    throw new Error('Google id token expired');
+  }
+
+  console.log('[google-login] verify idToken success: sub=%s, email=%s, aud=%s, iss=%s, exp=%s', payload.sub, payload.email || '', payload.aud, payload.iss, payload.exp);
+  return {
+    sub: String(payload.sub || '').trim(),
+    id: String(payload.sub || '').trim(),
+    googleId: String(payload.sub || '').trim(),
+    email: String(payload.email || '').trim(),
+    account: String(payload.email || payload.sub || '').trim(),
+    name: String(payload.name || payload.email || 'Google Player').trim(),
+    displayName: String(payload.name || '').trim(),
+    picture: String(payload.picture || '').trim(),
+    photoUrl: String(payload.picture || '').trim(),
+    emailVerified: payload.email_verified === true || payload.email_verified === 'true',
+    aud: payload.aud,
+    iss: payload.iss,
+    exp: expiresAtSeconds,
+  };
+}
+
 function decodeJwtPayload(token) {
   if (!token || typeof token !== 'string') return null;
   const parts = token.split('.');
@@ -827,7 +917,8 @@ async function routeGoogleAuth(req, res, parts) {
 
   if (req.method === 'POST' && parts.length === 4 && action === 'native') {
     const body = await parseBody(req);
-    const login = await loginWithGoogleProfile(body || {}, req);
+    const verifiedProfile = await verifyGoogleIdToken(body && body.idToken);
+    const login = await loginWithGoogleProfile(verifiedProfile, req);
     const result = await buildLoginResult(login.user, login.userInfo, login);
     sendJson(res, 200, result);
     return true;
@@ -860,15 +951,9 @@ async function routeGoogleAuth(req, res, parts) {
         redirect_uri: session.redirectUri,
         grant_type: 'authorization_code',
       });
-      const profile = decodeJwtPayload(token.id_token);
-      if (!profile || profile.aud !== GOOGLE_OAUTH.clientId) {
-        throw new Error('invalid Google id token audience');
-      }
-      if (!profile.sub) {
-        throw new Error('Google profile missing sub');
-      }
+      const verifiedProfile = await verifyGoogleIdToken(token.id_token);
 
-      const login = await loginWithGoogleProfile(profile, req);
+      const login = await loginWithGoogleProfile(verifiedProfile, req);
       session.status = 'success';
       session.completedAt = new Date().toISOString();
       session.user = login.user;
