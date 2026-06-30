@@ -366,6 +366,7 @@ async function buildLoginResult(user, userInfo, googleProfile) {
   const progress = playerId ? await playerProgressService.getProgress(playerId) : null;
   return {
     ok: true,
+    isNewUser: !!googleProfile.isNewUser,
     user,
     userInfo,
     roleInfo: userInfo,
@@ -576,8 +577,10 @@ async function loginWithGoogleProfile(profile, req) {
   const googleId = googleProfile.googleId;
   const account = `google:${googleId}`;
   const gameName = googleProfile.name;
+  let isNewUser = false;
   let user = await userDb.getUser(account);
   if (!user) {
+    isNewUser = true;
     try {
       user = await userDb.register(account, gameName, account);
       await dailyStatsRepository.recordNewUser(account, new Date());
@@ -623,7 +626,7 @@ async function loginWithGoogleProfile(profile, req) {
     ...avatarInfo,
     avatarUrl: selectedAvatarId > 0 ? '' : (avatarInfo.avatarUrl || ''),
   });
-  return { user, userInfo, googleId, email: googleProfile.email, name: userInfo.name || '', avatarUrl: avatarInfo.avatarUrl || '' };
+  return { user, userInfo, googleId, email: googleProfile.email, name: userInfo.name || '', avatarUrl: avatarInfo.avatarUrl || '', isNewUser };
 }
 
 userInfoService.registerRoutes(apiRoutes);
