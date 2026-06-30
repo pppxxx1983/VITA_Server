@@ -12,6 +12,7 @@ const { UserInfoService } = require('./user_info_service');
 const { RefreshTimeService } = require('./refresh_time_service');
 const { TravelService } = require('./travel_service');
 const { DailyRankAchievementService } = require('./daily_rank_achievement_service');
+const { PlayerProgressService } = require('./player_progress_service');
 const { createMysqlPool, verifyMysql } = require('./mysql_database');
 const { MysqlUserTable } = require('./mysql_user_table');
 const { MysqlProfileRepository } = require('./mysql_profile_repository');
@@ -113,6 +114,7 @@ const levelRankService = new LevelRankService(rankRepository, {
   dailyRankAchievementService,
 });
 const userInfoService = new UserInfoService(profileRepository, { dailyStatsRepository });
+const playerProgressService = new PlayerProgressService(profileRepository);
 const refreshTimeService = new RefreshTimeService();
 const travelDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'travel_data.json'), {
   version: 1,
@@ -361,11 +363,13 @@ async function buildLoginResult(user, userInfo, googleProfile) {
   await dailyRankRewardService.settleBefore(today);
   const rankReward = playerId ? await dailyRankRewardService.getPending(playerId) : null;
   const difficultyConfig = await difficultyRepository.getConfig();
+  const progress = playerId ? await playerProgressService.getProgress(playerId) : null;
   return {
     ok: true,
     user,
     userInfo,
     roleInfo: userInfo,
+    progress,
     rankReward,
     difficultyConfig,
     google: googleProfile ? {
@@ -623,6 +627,7 @@ async function loginWithGoogleProfile(profile, req) {
 }
 
 userInfoService.registerRoutes(apiRoutes);
+playerProgressService.registerRoutes(apiRoutes);
 refreshTimeService.registerRoutes(apiRoutes);
 travelService.registerRoutes(apiRoutes);
 dailyChallengeService.registerRoutes(apiRoutes);
@@ -1025,8 +1030,9 @@ async function routeUser(req, res, parts) {
       avatarId: body.avatarId,
       avatarFrameId: body.avatarFrameId,
     });
+    const progress = await playerProgressService.getProgress(getPlayerIdFromUser(user));
     const difficultyConfig = await difficultyRepository.getConfig();
-    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo, difficultyConfig });
+    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo, progress, difficultyConfig });
     return true;
   }
 
@@ -1051,8 +1057,9 @@ async function routeUser(req, res, parts) {
     const today = levelRankService.toDateString(new Date());
     await dailyRankRewardService.settleBefore(today);
     const rankReward = playerId ? await dailyRankRewardService.getPending(playerId) : null;
+    const progress = playerId ? await playerProgressService.getProgress(playerId) : null;
     const difficultyConfig = await difficultyRepository.getConfig();
-    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo, rankReward, difficultyConfig });
+    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo, progress, rankReward, difficultyConfig });
     return true;
   }
 
