@@ -73,6 +73,7 @@ const GOOGLE_OAUTH = Object.assign({}, config.googleOAuth || {}, {
   redirectUri: process.env.GOOGLE_OAUTH_REDIRECT_URI || (config.googleOAuth && config.googleOAuth.redirectUri) || '',
   sessionTtlMs: Number(process.env.GOOGLE_OAUTH_SESSION_TTL_MS || (config.googleOAuth && config.googleOAuth.sessionTtlMs) || 5 * 60 * 1000),
 });
+const GOOGLE_TOKENINFO_TIMEOUT_MS = Number(process.env.GOOGLE_TOKENINFO_TIMEOUT_MS || 2500);
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || config.publicBaseUrl || '').replace(/\/+$/, '');
 const googleLoginSessions = new Map();
 
@@ -489,7 +490,7 @@ async function verifyGoogleIdToken(idToken) {
   tokenInfoUrl.searchParams.set('id_token', token);
   let payload;
   try {
-    payload = await getJson(tokenInfoUrl.toString());
+    payload = await getJson(tokenInfoUrl.toString(), GOOGLE_TOKENINFO_TIMEOUT_MS);
   } catch (error) {
     console.error('[google-login] verify idToken request failed: %s', error && error.message ? error.message : error);
     if (!isGoogleTokenInfoNetworkError(error)) {
