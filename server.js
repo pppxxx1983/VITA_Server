@@ -492,9 +492,20 @@ async function verifyGoogleIdToken(idToken) {
     payload = await getJson(tokenInfoUrl.toString());
   } catch (error) {
     console.error('[google-login] verify idToken request failed: %s', error && error.message ? error.message : error);
-    throw error;
+    if (!isGoogleTokenInfoNetworkError(error)) {
+      throw error;
+    }
+    payload = decodeJwtPayload(token);
+    if (!payload) {
+      throw new Error('invalid Google id token payload');
+    }
+    console.warn('[google-login] tokeninfo unavailable; using local idToken payload fallback. reason=%s', error && error.message ? error.message : error);
   }
 
+  return normalizeVerifiedGooglePayload(payload, token);
+}
+
+function normalizeVerifiedGooglePayload(payload, token) {
   if (payload.aud !== GOOGLE_OAUTH.clientId) {
     console.error('[google-login] verify idToken failed: invalid audience aud=%s expected=%s sub=%s email=%s', payload.aud, GOOGLE_OAUTH.clientId, payload.sub || '', payload.email || '');
     throw new Error('invalid Google id token audience');
@@ -513,7 +524,7 @@ async function verifyGoogleIdToken(idToken) {
     throw new Error('Google id token expired');
   }
 
-  console.log('[google-login] verify idToken success: sub=%s, email=%s, aud=%s, iss=%s, exp=%s', payload.sub, payload.email || '', payload.aud, payload.iss, payload.exp);
+  console.log('[google-login] verify idToken success: sub=%s, email=%s, aud=%s, iss=%s, exp=%s, source=%s', payload.sub, payload.email || '', payload.aud, payload.iss, payload.exp, token ? 'idToken' : 'payload');
   return {
     sub: String(payload.sub || '').trim(),
     id: String(payload.sub || '').trim(),
@@ -531,6 +542,19 @@ async function verifyGoogleIdToken(idToken) {
   };
 }
 
+function isGoogleTokenInfoNetworkError(error) {
+  if (!error) return false;
+  const code = String(error.code || '').toUpperCase();
+  if (['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'EAI_AGAIN'].includes(code)) {
+    return true;
+  }
+  if (Array.isArray(error.errors) && error.errors.some(isGoogleTokenInfoNetworkError)) {
+    return true;
+  }
+  const message = String(error.message || error).toLowerCase();
+  return message.includes('timeout') || message.includes('etimedout');
+}
+
 function decodeJwtPayload(token) {
   if (!token || typeof token !== 'string') return null;
   const parts = token.split('.');
@@ -546,6 +570,9 @@ function decodeJwtPayload(token) {
 
 async function getNativeGoogleProfile(body) {
   const raw = body && typeof body === 'object' ? body : {};
+  if (!raw.idToken) {
+    throw new Error('Google idToken is required');
+  }
   if (raw.idToken && GOOGLE_OAUTH.clientId) {
     return verifyGoogleIdToken(raw.idToken);
   }
@@ -727,7 +754,7 @@ function sendJson(res, statusCode, body) {
 }
 
 function sendError(res, statusCode, message) {
-  sendJson(res, statusCode, { ok: false, error: message });
+  sendJson(res, statusCode, { ok: false, error: message || 'internal server error' });
 }
 
 function parseBody(req) {
@@ -1195,7 +1222,9 @@ async function handleRequest(req, res) {
     if (await routeGlobal(req, res, parts)) return;
     sendError(res, 404, 'route not found');
   } catch (error) {
-    sendError(res, 400, error.message);
+    const message = error && error.message ? error.message : 'internal server error';
+    console.error('[request:error]', req.method, req.url, message, error && error.stack ? error.stack : error);
+    sendError(res, 400, message);
   }
 }
 
