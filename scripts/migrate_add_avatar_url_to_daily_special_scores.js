@@ -5,7 +5,11 @@
  *   node scripts/migrate_add_avatar_url_to_daily_special_scores.js
  */
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+try {
+  require('dotenv').config({ path: path.join(__dirname, '../.env') });
+} catch (err) {
+  // dotenv may not be installed; environment variables will be used directly.
+}
 
 const mysql = require('mysql2/promise');
 

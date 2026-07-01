@@ -45,6 +45,7 @@ class UserInfoService {
   constructor(dataStore, options = {}) {
     this.dataStore = dataStore;
     this.dailyStatsRepository = options.dailyStatsRepository || null;
+    this.autoMatchConfigRepository = options.autoMatchConfigRepository || null;
     this.rootKey = options.rootKey || 'userInfos';
   }
 
@@ -54,7 +55,10 @@ class UserInfoService {
       console.log(`[userInfo] GET /api/user/info/${playerId}`);
       const userInfo = await this.getUserInfo(playerId);
       await this.recordActivity(playerId);
-      ctx.json(200, { ok: true, playerId, userInfo });
+      const autoMatchConfig = this.autoMatchConfigRepository
+        ? await this.autoMatchConfigRepository.getConfig()
+        : null;
+      ctx.json(200, { ok: true, playerId, userInfo, autoMatchConfig });
     });
 
     routes.post('/api/user/info/:playerId', (ctx) => this.patchUserInfoRoute(ctx));

@@ -81,8 +81,8 @@ function mergeProgress(current, patch) {
       ...base.travelCollectedMedalIndexes,
       ...next.travelCollectedMedalIndexes,
     ])).sort((a, b) => a - b),
-    refreshCount: Math.max(base.refreshCount, next.refreshCount),
-    hintCount: Math.max(base.hintCount, next.hintCount),
+    refreshCount: next.refreshCount,
+    hintCount: next.hintCount,
     updatedAt: nowIso(),
   };
 }
