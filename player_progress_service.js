@@ -64,8 +64,8 @@ function normalizeProgress(progress) {
     dailyClearData: normalizeDailyClearData(source.dailyClearData),
     travelLevelIndex: Math.max(1, normalizePositiveInt(source.travelLevelIndex, 1)),
     travelCollectedMedalIndexes: normalizeIndexArray(source.travelCollectedMedalIndexes),
-    refreshCount: Math.max(0, normalizePositiveInt(source.refreshCount, 0)),
-    hintCount: Math.max(0, normalizePositiveInt(source.hintCount, 0)),
+    refreshCount: Math.max(0, normalizePositiveInt(source.refreshCount, 3)),
+    hintCount: Math.max(0, normalizePositiveInt(source.hintCount, 3)),
     updatedAt: typeof source.updatedAt === 'string' && source.updatedAt.trim() ? source.updatedAt.trim() : '',
   };
 }
