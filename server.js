@@ -73,7 +73,7 @@ const GOOGLE_OAUTH = Object.assign({}, config.googleOAuth || {}, {
   redirectUri: process.env.GOOGLE_OAUTH_REDIRECT_URI || (config.googleOAuth && config.googleOAuth.redirectUri) || '',
   sessionTtlMs: Number(process.env.GOOGLE_OAUTH_SESSION_TTL_MS || (config.googleOAuth && config.googleOAuth.sessionTtlMs) || 5 * 60 * 1000),
 });
-const GOOGLE_TOKENINFO_TIMEOUT_MS = Number(process.env.GOOGLE_TOKENINFO_TIMEOUT_MS || 2500);
+const GOOGLE_TOKENINFO_TIMEOUT_MS = Number(process.env.GOOGLE_TOKENINFO_TIMEOUT_MS || 0);
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || config.publicBaseUrl || '').replace(/\/+$/, '');
 const googleLoginSessions = new Map();
 
@@ -489,18 +489,26 @@ async function verifyGoogleIdToken(idToken) {
   const tokenInfoUrl = new URL('https://oauth2.googleapis.com/tokeninfo');
   tokenInfoUrl.searchParams.set('id_token', token);
   let payload;
-  try {
-    payload = await getJson(tokenInfoUrl.toString(), GOOGLE_TOKENINFO_TIMEOUT_MS);
-  } catch (error) {
-    console.error('[google-login] verify idToken request failed: %s', error && error.message ? error.message : error);
-    if (!isGoogleTokenInfoNetworkError(error)) {
-      throw error;
+  if (GOOGLE_TOKENINFO_TIMEOUT_MS > 0) {
+    try {
+      payload = await getJson(tokenInfoUrl.toString(), GOOGLE_TOKENINFO_TIMEOUT_MS);
+    } catch (error) {
+      console.error('[google-login] verify idToken request failed: %s', error && error.message ? error.message : error);
+      if (!isGoogleTokenInfoNetworkError(error)) {
+        throw error;
+      }
+      payload = decodeJwtPayload(token);
+      if (!payload) {
+        throw new Error('invalid Google id token payload');
+      }
+      console.warn('[google-login] tokeninfo unavailable; using local idToken payload fallback. reason=%s', error && error.message ? error.message : error);
     }
+  } else {
     payload = decodeJwtPayload(token);
     if (!payload) {
       throw new Error('invalid Google id token payload');
     }
-    console.warn('[google-login] tokeninfo unavailable; using local idToken payload fallback. reason=%s', error && error.message ? error.message : error);
+    console.warn('[google-login] tokeninfo disabled; using local idToken payload validation.');
   }
 
   return normalizeVerifiedGooglePayload(payload, token);
@@ -1014,10 +1022,15 @@ async function routeGoogleAuth(req, res, parts) {
   }
 
   if (req.method === 'POST' && parts.length === 4 && action === 'native') {
+    const startedAt = Date.now();
     const body = await parseBody(req);
+    console.log('[google-login] native request parsed in %dms, hasIdToken=%s', Date.now() - startedAt, !!(body && body.idToken));
     const googleProfile = await getNativeGoogleProfile(body);
+    console.log('[google-login] native profile verified in %dms, googleId=%s', Date.now() - startedAt, googleProfile.googleId || googleProfile.id || googleProfile.sub || '');
     const login = await loginWithGoogleProfile(googleProfile, req);
+    console.log('[google-login] native account login completed in %dms, playerId=%s', Date.now() - startedAt, getPlayerIdFromUser(login.user) || '');
     const result = await buildLoginResult(login.user, login.userInfo, login);
+    console.log('[google-login] native response built in %dms, playerId=%s', Date.now() - startedAt, getPlayerIdFromUser(login.user) || '');
     sendJson(res, 200, result);
     return true;
   }
