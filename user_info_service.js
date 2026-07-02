@@ -46,6 +46,7 @@ class UserInfoService {
     this.dataStore = dataStore;
     this.dailyStatsRepository = options.dailyStatsRepository || null;
     this.autoMatchConfigRepository = options.autoMatchConfigRepository || null;
+    this.systemConfigRepository = options.systemConfigRepository || null;
     this.rootKey = options.rootKey || 'userInfos';
   }
 
@@ -58,7 +59,10 @@ class UserInfoService {
       const autoMatchConfig = this.autoMatchConfigRepository
         ? await this.autoMatchConfigRepository.getConfig()
         : null;
-      ctx.json(200, { ok: true, playerId, userInfo, autoMatchConfig });
+      const ageSegmentLabels = this.systemConfigRepository
+        ? await this.systemConfigRepository.getAgeSegmentLabels()
+        : null;
+      ctx.json(200, { ok: true, playerId, userInfo, autoMatchConfig, ageSegmentLabels });
     });
 
     routes.post('/api/user/info/:playerId', (ctx) => this.patchUserInfoRoute(ctx));

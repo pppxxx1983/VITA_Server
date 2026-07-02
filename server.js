@@ -24,6 +24,7 @@ const { TrackingRepository } = require('./tracking_repository');
 const { DailyStatsRepository } = require('./daily_stats_repository');
 const { DifficultyRepository } = require('./difficulty_repository');
 const { AutoMatchConfigRepository } = require('./auto_match_config_repository');
+const { SystemConfigRepository } = require('./system_config_repository');
 const { MysqlDailyChallengeRepository } = require('./mysql_daily_challenge_repository');
 const { DailyChallengeService } = require('./daily_challenge_service');
 
@@ -107,6 +108,7 @@ const trackingRepository = new TrackingRepository(mysqlPool);
 const dailyStatsRepository = new DailyStatsRepository(mysqlPool);
 const difficultyRepository = new DifficultyRepository(mysqlPool);
 const autoMatchConfigRepository = new AutoMatchConfigRepository(mysqlPool);
+const systemConfigRepository = new SystemConfigRepository(mysqlPool);
 const dailyChallengeRepository = new MysqlDailyChallengeRepository(mysqlPool);
 const dailyRankAchievementService = new DailyRankAchievementService(achievementRepository);
 const dailyRankRewardService = new DailyRankRewardService(dailyRankRewardRepository);
@@ -116,7 +118,7 @@ const levelRankService = new LevelRankService(rankRepository, {
   dailySpecialDataStore: rankRepository,
   dailyRankAchievementService,
 });
-const userInfoService = new UserInfoService(profileRepository, { dailyStatsRepository, autoMatchConfigRepository });
+const userInfoService = new UserInfoService(profileRepository, { dailyStatsRepository, autoMatchConfigRepository, systemConfigRepository });
 const playerProgressService = new PlayerProgressService(profileRepository);
 const refreshTimeService = new RefreshTimeService();
 const travelDataStore = new JsonDataStore(path.join(path.dirname(DB_FILE), 'travel_data.json'), {
@@ -367,6 +369,7 @@ async function buildLoginResult(user, userInfo, googleProfile) {
   const rankReward = playerId ? await dailyRankRewardService.getPending(playerId) : null;
   const difficultyConfig = await difficultyRepository.getConfig();
   const autoMatchConfig = await autoMatchConfigRepository.getConfig();
+  const ageSegmentLabels = await systemConfigRepository.getAgeSegmentLabels();
   const progress = playerId ? await playerProgressService.getProgress(playerId) : null;
   return {
     ok: true,
@@ -378,6 +381,7 @@ async function buildLoginResult(user, userInfo, googleProfile) {
     rankReward,
     difficultyConfig,
     autoMatchConfig,
+    ageSegmentLabels,
     google: googleProfile ? {
       id: googleProfile.googleId,
       email: googleProfile.email || '',
@@ -1109,7 +1113,8 @@ async function routeUser(req, res, parts) {
     const progress = await playerProgressService.getProgress(getPlayerIdFromUser(user));
     const difficultyConfig = await difficultyRepository.getConfig();
     const autoMatchConfig = await autoMatchConfigRepository.getConfig();
-    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo, progress, difficultyConfig, autoMatchConfig });
+    const ageSegmentLabels = await systemConfigRepository.getAgeSegmentLabels();
+    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo, progress, difficultyConfig, autoMatchConfig, ageSegmentLabels });
     return true;
   }
 
@@ -1137,7 +1142,8 @@ async function routeUser(req, res, parts) {
     const progress = playerId ? await playerProgressService.getProgress(playerId) : null;
     const difficultyConfig = await difficultyRepository.getConfig();
     const autoMatchConfig = await autoMatchConfigRepository.getConfig();
-    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo, progress, rankReward, difficultyConfig, autoMatchConfig });
+    const ageSegmentLabels = await systemConfigRepository.getAgeSegmentLabels();
+    sendJson(res, 200, { ok: true, user, userInfo, roleInfo: userInfo, progress, rankReward, difficultyConfig, autoMatchConfig, ageSegmentLabels });
     return true;
   }
 
@@ -1257,6 +1263,7 @@ async function startServer() {
   await dailyStatsRepository.ensureTable();
   await difficultyRepository.ensureTable();
   await autoMatchConfigRepository.ensureTable();
+  await systemConfigRepository.ensureTable();
   await dailyChallengeRepository.ensureTable();
   server.listen(PORT, HOST, () => {
     console.log(`Global settings server listening on http://${HOST}:${PORT}`);
