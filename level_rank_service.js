@@ -1,5 +1,5 @@
 const MIN_LEVEL = 1;
-const MAX_LEVEL = 1000;
+const MAX_LEVEL = 2000;
 
 function toFiniteNumber(value, name) {
   const num = Number(value);
